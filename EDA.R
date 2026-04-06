@@ -3,6 +3,7 @@ library(dplyr)
 library(purrr)
 library(tidyverse)
 library(lubridate)
+library(caret)
 
 df <- read_parquet("yellow_tripdata_2025-02.parquet", header=TRUE)
 names(df)
@@ -31,20 +32,38 @@ dim(df)
 summary(df)
 
 # draw 1% sample from each RatecodeID; RatecodeID==1 dominates dataset
-sample_prop <- df %>% group_by(RatecodeID) %>%
+sample_prop <- df %>% 
+  filter(Borough_pickup == "Manhattan",
+         Borough_dropoff == "Manhattan") %>% group_by(RatecodeID) %>%
   sample_frac(0.01, replace=FALSE) %>%
   ungroup()
 
 # create time features to explore patterns
 df1 <- sample_prop %>% mutate(
   hour = lubridate::hour(tpep_pickup_datetime),
-  weekday = lubridate::wday(tpep_pickup_datetime, label = TRUE))
+  timeofday = factor(ifelse(lubridate::hour(tpep_pickup_datetime) < 5, "EarlyAM",
+              ifelse(lubridate::hour(tpep_pickup_datetime) < 10, "AM Commute",
+              ifelse(lubridate::hour(tpep_pickup_datetime) < 14, "Lunch",
+              ifelse(lubridate::hour(tpep_pickup_datetime) < 19, "PM Commute",
+                     "Night"))))),
+  weekday = lubridate::wday(tpep_pickup_datetime, label = TRUE),
+  lunchtime = ifelse(10 < lubridate::hour(tpep_pickup_datetime) & 
+                       lubridate::hour(tpep_pickup_datetime) < 14,1,0))
+summary(df1)
 
-# plot distribution of tip_pct 
-df1 %>% ggplot(aes(tip_pct)) + geom_histogram(bins=50) + 
-  facet_wrap(~weekday)
+# plot distribution of tips 
+df1 %>%
+  ggplot(aes(tip_amount)) + geom_histogram(bins=50)
 
-df1 %>% ggplot(aes(hour,fill = tip_pct>25)) + geom_bar(position="fill")
+df1 %>%
+  ggplot(aes(tip_pct,fill=timeofday)) + geom_histogram(bins=50)
+
+df1 %>%
+  group_by(hour) %>%
+  summarize(mean_tip = mean(tip_pct)) %>%
+  ggplot(aes(mean_tip,fill=factor(hour))) + geom_histogram()
+
+df1 %>% ggplot(aes(timeofday,fill = tip_pct>35)) + geom_bar(position="fill")
 
 df1 %>% group_by(PULocationID, Zone_pickup, Borough_pickup) %>%
   summarize(mean_tip = mean(tip_pct)) %>%
@@ -60,7 +79,7 @@ df1 %>% ggplot(aes(trip_distance, tip_pct)) +
   geom_point()
 
 df1 %>% ggplot(aes(trip_distance, tip_amount)) +
-  geom_point()
+  geom_point() + geom_smooth(method="lm")
 
 df1 %>% ggplot(aes(Borough_pickup, tip_amount)) +
   geom_point(aes(col=Borough_dropoff),position="jitter")
@@ -70,3 +89,17 @@ df1 %>%
   select(tip_pct, tip_amount, RatecodeID, trip_distance, fare_amount, hour) %>%
   cor(use = "complete.obs")
 
+# Training/Test split
+train_ind <- sample(1:dim(df1)[1],round(.7*dim(df1)[1]))
+train = df1[train_ind,]
+test = df1[-train_ind,]
+# Linear Model
+fit <- lm(tip_amount~trip_distance+I(trip_distance^.5)+I(fare_amount^.5)+RatecodeID, data= train)
+summary(fit)
+
+pred_probs <- predict(fit,test)
+RMSE <- sqrt(mean((pred_probs-test$tip_amount)^2))
+MAE <- mean(abs(pred_probs-test$tip_amount))
+
+RMSE
+MAE
