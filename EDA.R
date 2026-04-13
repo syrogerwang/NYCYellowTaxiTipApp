@@ -30,12 +30,13 @@ df <- df %>%
 print(head(df), width=Inf)
 dim(df)
 summary(df)
+dim(df[df$tip_pct==0,])[1]/dim(df)[1]*100
+dim(df[df$tip_amount==10,])[1]/dim(df)[1]*100
 
 # draw 1% sample from each RatecodeID; RatecodeID==1 dominates dataset
-sample_prop <- df %>% 
-  filter(Borough_pickup == "Manhattan",
-         Borough_dropoff == "Manhattan") %>% group_by(RatecodeID) %>%
-  sample_frac(0.01, replace=FALSE) %>%
+sample_df <- taxi %>% 
+  group_by(Month) %>%
+  sample_frac(0.05, replace=FALSE) %>%
   ungroup()
 
 # create time features to explore patterns
@@ -50,9 +51,19 @@ df1 <- sample_prop %>% mutate(
   lunchtime = ifelse(10 < lubridate::hour(tpep_pickup_datetime) & 
                        lubridate::hour(tpep_pickup_datetime) < 14,1,0))
 summary(df1)
+names(df1)
+# Pairs
+pairs(~ trip_distance + RatecodeID + sqrt(fare_amount) + log(tip_amount) + tip_pct, data= df1)
+
+dim(df1[df1$tip_amount==10,])[1]/dim(df1)[1]*100
+model <- lm(tip_amount~trip_distance+fare_amount,data=df1)
+summary(model)
+
+model2 <- lm(tip_amount~trip_distance+fare_amount+I(RatecodeID^2),data=df1)
+summary(model2)
 
 # plot distribution of tips 
-df1 %>%
+df %>%
   ggplot(aes(tip_amount)) + geom_histogram(bins=50)
 
 df1 %>%
