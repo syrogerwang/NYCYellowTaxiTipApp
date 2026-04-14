@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r cars}
+```{r data-import}
 library(arrow)
 library(dplyr)
 library(tidyr)
@@ -35,14 +35,155 @@ taxi <- bind_rows(
   })
 )
 
-
-head(taxi)
-nrow(taxi)
-summary(taxi)
+dim(taxi) # Number of rows and columns in total dataset
+head(taxi) # Preview of first 6 rows of dataset
+nrow(taxi) # number of rows in total dataset
+summary(taxi) # summary statistics of total dataset
 
 ```
 
+```{r create-sampling-distributions}
+# sampling distribution of tips and fare amounts where the tip % is less than 100% of the fare amount
+mean_tip_holder       <- c()
+mean_fare_holder      <- c()
+mean_tip_pct_holder   <- c()
+
+for(i in 1:1000){
+  id <- sample(1:nrow(taxi), 100)
+
+  tmp <- taxi[id, ] %>% 
+    filter(tip_amount/fare_amount < 1,
+           trip_distance >0,
+           fare_amount >0) %>%
+    summarize(
+      mean_tip     = mean(tip_amount),
+      mean_fare    = mean(fare_amount),
+      mean_tip_pct = mean(tip_amount / fare_amount)
+    )
+
+  mean_tip_holder[i]     <- tmp$mean_tip
+  mean_fare_holder[i]    <- tmp$mean_fare
+  mean_tip_pct_holder[i] <- tmp$mean_tip_pct
+}
+```
+<div data-plot-id="mean_tip_distribution"
+     data-tags="tips,sampling, distribution,taxi">
 ```{r}
+# Average tips are usually between 2 - 4 dollars
+ggplot(data.frame(mean_tip_holder),aes(mean_tip_holder))+geom_histogram()+
+  labs(title="Sampling Distribution of Average Tip Amounts",
+       x="Tip Amounts", y="Count")
+```
+</div>
+<div data-plot-id="mean_fare_distribution"
+     data-tags="fare,sampling, distribution,taxi">
+```{r}
+# On average, most fares are between roughly 17 and 23 dollars
+ggplot(data.frame(mean_fare_holder),aes(mean_fare_holder))+geom_histogram()+
+  labs(title="Sampling Distribution of Average Fare Amounts",
+       x="Fare Amounts", y="Count")
+```
+</div>
+
+<div data-plot-id="mean_tip_pct_distribution"
+     data-tags="tips,tips,percent,sampling, distribution,taxi">
+```{r}
+# On average, most tip percents are between roughly 14 and 19 percent of the fare amount
+ggplot(data.frame(mean_tip_pct_holder),aes(mean_tip_pct_holder))+geom_histogram()+
+  labs(title="Sampling Distribution of Average Tip Percents",
+       x="Tip Percent of Fare", y="Count")
+```
+</div>
+
+```{r}
+names(taxi)
+locations <- read.csv("taxi_zone_lookup.csv", header = TRUE)
+
+taxi <- taxi %>%
+  left_join(locations, by = c("PULocationID" = "LocationID")) %>%
+  left_join(locations, by = c("DOLocationID" = "LocationID"), 
+            suffix = c("_pickup", "_dropoff"))
+boroughs <- unique(taxi$Borough_pickup)
+
+results <- data.frame(
+  borough = character(),
+  mean_tip = numeric(),
+  mean_fare = numeric(),
+  mean_tip_pct = numeric(),
+  mean_dist = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (b in boroughs) {
+  borough_data <- taxi %>% filter(Borough_pickup == b)
+
+  for (i in 1:1000) {
+    id <- sample(1:nrow(borough_data), 100)
+
+    tmp <- borough_data[id, ] %>%
+      filter(tip_amount / fare_amount < 1) %>%
+      summarize(
+        mean_tip      = mean(tip_amount),
+        mean_fare     = mean(fare_amount),
+        mean_tip_pct  = mean(tip_amount / fare_amount),
+        mean_dist = mean(trip_distance)
+      )
+
+    results <- rbind(
+      results,
+      data.frame(
+        Borough = b,
+        mean_tip = tmp$mean_tip,
+        mean_fare = tmp$mean_fare,
+        mean_tip_pct = tmp$mean_tip_pct,
+        mean_distance = tmp$mean_dist
+      )
+    )
+  }
+}
+```
+<div data-plot-id="mean_tip_by_borough"
+     data-tags="tips,tip,amount,borough,sampling, distribution,taxi">
+```{r}
+# On average, we see higher tips for pickup locations in EWR and Queens while we see lower tips for pickup locations in Bronx, Brooklyn, and Staten Island
+results %>% ggplot(aes(mean_tip,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
+  labs(title = "Sampling Distribution of Mean Tips by Borough", x="Mean Tip Amounts", y="Count")
+```
+</div>
+
+<div data-plot-id="mean_fare_by_borough"
+     data-tags="fare,amount,borough,sampling, distribution,taxi">
+```{r}
+# We see the highest average fares for pickup locations in EWR while we see our lowest average fares for pickup locations in Bronx, Brooklyn, and Staten Island with medium average fares for pickup locations in Queens
+results %>% ggplot(aes(mean_fare,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
+  labs(title = "Sampling Distribution of Mean Fares by Borough", x="Mean Fare Amounts", y="Count")
+```
+</div>
+
+<div data-plot-id="mean_tip_pct_by_borough"
+     data-tags="tip,tips,percent,borough,sampling, distribution,taxi">
+```{r}
+# We see the highest average tip percent for pickup locations in Manhattan while we see the lowest average tip percents for pickup locations in Bronx, Brooklyn, and Staten Island with mid-range average tip percents for pickup locations in EWR and Queens
+results %>% ggplot(aes(mean_tip_pct,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
+  labs(title = "Sampling Distribution of Mean Tip Percent of Fare by Borough", x="Mean Tip Percent Amounts", y="Count")
+```
+</div>
+<div data-table-id="Insights-tips-fare-percent-by-borough"
+     data-table-tags="insights, tips,fares,percent,borough">
+```{r insights}
+insights <- data.frame(Borough = c("Bronx","Brooklyn","EWR","Manhattan","N/A","Queens","Staten Island","Unknown"),
+                       Tips = c("Low","Low","High","Low","High","High","Low","Medium"),
+                       Fares = c("Low","Low","High","Low","High","Medium","Low","Low"),
+                       Percent = c("Low","Low","Medium","High","Medium","Medium","Low","High"))
+# For Pickup locations in Bronx, Brooklyn, and Staten Island, fares and percentage is low, so tip amounts are also low
+# For pickup locations in EWR, N/A, and Queens, average fares are medium/higher, but percentage is medium, resulting in high tip amounts
+# For pickup locations in Manhattan and Unknown, fares are low, so even with a high percentage, average tips will still be low
+# No pickup boroughs had high average fares and low average tips
+insights
+```
+</div>
+
+```{r add-factor-labels}
 taxi <- taxi %>%
   mutate(
     # Vendor labels
@@ -79,7 +220,7 @@ taxi <- taxi %>%
     )
   )
 
-head(taxi)
+head(taxi) # preview first 6 rows of dataset with factor labels 
 ```
 
 
@@ -98,9 +239,9 @@ taxi %>%
   mutate(
     total = `FALSE` + `TRUE`,
     missing_pct = `TRUE` / total * 100
-  )
+  ) # summarize vendors with missing information
 
-library(ggplot2)
+library(ggplot2) # import library ggplot2 for plotting
 
 taxi %>%
   filter(!is.na(passenger_count)) %>%
@@ -111,7 +252,7 @@ taxi %>%
     x = "Vendor",
     y = "Passenger Count"
   ) +
-  theme_minimal()
+  theme_minimal() # plot for passenger count distribution by vendor
 
 taxi %>%
   filter(!is.na(passenger_count)) %>%
@@ -123,7 +264,7 @@ taxi %>%
     x = "Passenger Count",
     y = "Count"
   ) +
-  theme_minimal()
+  theme_minimal() # barplot showing passenger count frequency by vendor
 
 
 # Whole dataset

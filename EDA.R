@@ -5,6 +5,50 @@ library(tidyverse)
 library(lubridate)
 library(caret)
 
+
+files <- choose.files()
+
+#files <- list.files("C:/Users/sheng/Downloads", pattern = "\\.parquet$", full.names = TRUE)
+
+basename(files)
+
+taxi <- bind_rows(
+  lapply(seq_along(files), function(i) {
+    f <- files[i]
+    
+    # extract month
+    month_val <- as.integer(sub(".*-(\\d{2})\\.parquet", "\\1", basename(f)))
+    
+    set.seed(123)
+    
+    read_parquet(f) %>%
+      sample_frac(0.05, replace = FALSE) %>%
+      mutate(month = month_val)
+  })
+)
+set.seed(123)
+
+taxi %>%
+  filter(trip_distance > 0,
+         trip_distance < 50) %>%
+  group_by(month) %>%
+  slice_sample(n = 500) %>%
+  ungroup() %>%
+  ggplot(aes(trip_distance, tip_amount)) +
+  geom_point() + geom_smooth(method="lm")
+set.seed(123)
+id <- sample(1:dim(taxi)[1],round(.7*dim(taxi)[1]))
+taxitrain <- taxi[id,]
+taxitest <- taxi[-id,]
+taxitrain <- taxitrain %>%
+  filter(trip_distance >0,
+         fare_amount >0)
+taxitrain %>% ggplot(aes(log(trip_distance),log(tip_amount))) + geom_point() +
+  geom_smooth(method="lm")
+model <- lm(tip_amount~log(trip_distance), data=taxitrain)
+summary(model)
+dim(taxi)
+
 df <- read_parquet("yellow_tripdata_2025-02.parquet", header=TRUE)
 names(df)
 dim(df)
@@ -53,7 +97,7 @@ df1 <- sample_prop %>% mutate(
 summary(df1)
 names(df1)
 # Pairs
-pairs(~ trip_distance + RatecodeID + sqrt(fare_amount) + log(tip_amount) + tip_pct, data= df1)
+pairs(~ trip_distance + RatecodeID + sqrt(fare_amount) + log(tip_amount) + tip_pct, data= df)
 
 dim(df1[df1$tip_amount==10,])[1]/dim(df1)[1]*100
 model <- lm(tip_amount~trip_distance+fare_amount,data=df1)
