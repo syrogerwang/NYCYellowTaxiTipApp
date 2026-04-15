@@ -1,0 +1,1465 @@
+---
+title: "Project 2"
+author: "Roger Wang"
+date: "2026-04-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import Data
+
+```{r cars}
+library(arrow)
+library(dplyr)
+library(tidyr)
+
+#files <- choose.files()
+
+files <- list.files(choose.files(), pattern = "\\.parquet$", full.names = TRUE)
+
+basename(files) #making sure the correct files are grabbed.
+
+
+#sampling 5% from each month
+taxi <- bind_rows(
+  lapply(seq_along(files), function(i) {
+    f <- files[i]
+  
+    # extract month
+    month_val <- as.integer(sub(".*-(\\d{2})\\.parquet", "\\1", basename(f)))
+    
+    set.seed(123)
+    
+    read_parquet(f) %>%
+      sample_frac(0.05, replace = FALSE) %>%
+      mutate(month = month_val)
+  })
+)
+
+
+head(taxi)
+nrow(taxi) # Total of 2436130 records
+summary(taxi)
+
+```
+
+# Adding Labels for Vendor, Rate Code, and Payment Type
+
+```{r}
+taxi <- taxi %>%
+  mutate(
+    # Vendor labels
+    Vendor_name = case_when(
+      VendorID == 1 ~ "Creative Mobile Technologies",
+      VendorID == 2 ~ "Curb Mobility",
+      VendorID == 6 ~ "Myle Technologies",
+      VendorID == 7 ~ "Helix",
+      TRUE ~ "Unknown"
+    ),
+
+    # Rate code labels
+    Ratecode_name = case_when(
+      RatecodeID == 1 ~ "Standard",
+      RatecodeID == 2 ~ "JFK",
+      RatecodeID == 3 ~ "Newark",
+      RatecodeID == 4 ~ "Nassau/Westchester",
+      RatecodeID == 5 ~ "Negotiated",
+      RatecodeID == 6 ~ "Group ride",
+      RatecodeID == 99 ~ "Unknown",
+      TRUE ~ "Unknown"
+    ),
+
+    # Payment type labels
+    payment_type_name = case_when(
+      payment_type == 0 ~ "Flex fare",
+      payment_type == 1 ~ "Credit card",
+      payment_type == 2 ~ "Cash",
+      payment_type == 3 ~ "No charge",
+      payment_type == 4 ~ "Dispute",
+      payment_type == 5 ~ "Unknown",
+      payment_type == 6 ~ "Voided trip",
+      TRUE ~ "Unknown"
+    )
+  )
+
+head(taxi)
+```
+
+# Checking missing values
+## A few variables have a large number of missing entries (580,571 NAs out of 2436130 records), including:passenger_count, RatecodeID, store_and_fwd_flag, congestion_surcharge, Airport_fee
+
+```{r}
+#Checking missing values
+sapply(taxi, function(x) sum(is.na(x)))
+```
+
+# Section: Missing Passenger Count Analysis by Vendor
+
+## Question: How does missing passenger count data vary across taxi vendors
+## Myle Technologies has 100% missing data, which suggests a systematic issue rather than random missingness. In contrast, Creative Mobile Technologies (16.4%) and Curb Mobility (26%) have moderate levels of missing data, while Helix has no missing values at all.
+
+## Question: How are passenger counts distributed across different vendors?
+## Most trips across all vendors have a passenger count of 1, with higher counts (6–9) being rare outliers. Curb Mobility shows slightly more variability, but overall patterns are similar across vendors.
+
+```{r}
+taxi %>%
+  count(Vendor_name, missing = is.na(passenger_count)) %>%
+  pivot_wider(names_from = missing, values_from = n, values_fill = 0) %>%
+  mutate(
+    total = `FALSE` + `TRUE`,
+    missing_pct = `TRUE` / total * 100
+  )
+
+library(ggplot2)
+
+taxi %>%
+  filter(!is.na(passenger_count)) %>%
+  ggplot(aes(x = Vendor_name, y = passenger_count)) +
+  geom_boxplot() +
+  labs(
+    title = "Passenger Count Distribution by Vendor",
+    x = "Vendor",
+    y = "Passenger Count"
+  ) +
+  theme_minimal()
+
+taxi %>%
+  filter(!is.na(passenger_count)) %>%
+  ggplot(aes(x = factor(passenger_count))) +
+  geom_bar() +
+  facet_wrap(~Vendor_name) +
+  labs(
+    title = "Passenger Count Frequency by Vendor",
+    x = "Passenger Count",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+# Question: How should missing passenger count data be handled?
+## This suggests the missingness is vendor-specific, not random. So I imputed missing passenger counts as 1 for non-Myle vendors (since 1 is most common), but avoided doing so for Myle to prevent bias.
+
+```{r}
+taxi <- taxi %>%
+  mutate(
+    passenger_count_missing = is.na(passenger_count),
+    passenger_count = ifelse(
+      is.na(passenger_count) & Vendor_name != "Myle Technologies",
+      1,
+      passenger_count
+    )
+  )
+
+head(taxi)
+```
+
+
+
+# Section: Impact of Missing Passenger Count on Tip Analysis
+
+## Question: Does missing passenger count data affect tip amounts?
+## After removing trips with missing passenger counts, the mean tip rose from 2.84 to 3.63 and the median from 2.00 to 2.95. This suggests missing values are associated with lower tips. I also observed extreme tip values, indicating outliers or data issues that may need cleaning.
+
+```{r}
+# Whole dataset
+taxi %>%
+  summarise(
+    mean_tip = mean(tip_amount, na.rm = TRUE),
+    median_tip = median(tip_amount, na.rm = TRUE),
+    min_tip = min(tip_amount, na.rm = TRUE),
+    max_tip = max(tip_amount, na.rm = TRUE)
+  )
+
+# Excluding missing passenger_count
+taxi %>%
+  filter(!is.na(passenger_count)) %>%
+  summarise(
+    mean_tip = mean(tip_amount, na.rm = TRUE),
+    median_tip = median(tip_amount, na.rm = TRUE),
+    min_tip = min(tip_amount, na.rm = TRUE),
+    max_tip = max(tip_amount, na.rm = TRUE)
+  )
+```
+
+# Section: Handling Missing Surcharge and Airport Fee Values
+
+## Question: How prevalent are missing values in surcharge-related variables, and how should I treat them?
+## Both variables have many missing values but most entries are valid. I treated missing values as no fee applied and replaced them with 0, allowing me to keep all observations without bias.
+```{r}
+taxi %>%
+  summarise(
+    congestion_non_na = sum(!is.na(congestion_surcharge)),
+    congestion_na = sum(is.na(congestion_surcharge)),
+    airport_non_na = sum(!is.na(Airport_fee)),
+    airport_na = sum(is.na(Airport_fee))
+  )
+
+taxi <- taxi %>%
+  mutate(
+    congestion_surcharge = replace_na(congestion_surcharge, 0),
+    Airport_fee = replace_na(Airport_fee, 0)
+  )
+```
+
+# Section: Data Consistency Checks and Fare Cleaning
+
+## Question: Are there inconsistencies between fare and total amount, and how should I clean them?
+## I checked for inconsistencies by identifying records with non-positive fares or totals, which are likely invalid. I removed observations where fare_amount ≤ 0 to ensure only meaningful trips remain.
+##I then calculated tip percentage using fare_amount, since total_amount includes tips and extra fees and could distort results. After cleaning, the median tip percentage is ~20% and the mean ~18.8%, though some extreme outliers remain.
+##Overall, using fare_amount provides a cleaner, more consistent basis for analysis and reduces the impact of irregularities in total_amount.
+
+```{r}
+# Case 1 count
+taxi %>%
+  filter(fare_amount <= 0) %>%
+  nrow()
+
+# Case 2 count
+taxi %>%
+  filter(total_amount <= 0) %>%
+  nrow()
+
+taxi <- taxi %>% filter(fare_amount > 0)
+
+taxi <- taxi %>% mutate(tip_percent_fare_amount = tip_amount / fare_amount)
+
+summary(taxi)
+head(taxi)
+```
+
+
+# Section: Tipping Behavior by Payment Type
+
+## Question: How does average tip percentage vary by payment type, and which payment methods have the highest and lowest tipping rates?
+## Answer: Tip percentages vary by payment type: credit cards have the highest (~27.2%), flex fare is low (~1.7%), and cash appears near zero due to unrecorded tips. “Dispute” and “No charge” are excluded as they don’t reflect real tipping behavior, leaving credit cards with clearly higher recorded tips than flex fare.
+
+```{r}
+library(ggplot2)
+library(scales)
+
+#Payment type
+taxi %>%
+  group_by(payment_type_name) %>%
+  summarise(
+    avg_tip = mean(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(payment_type_name, avg_tip), y = avg_tip, fill = payment_type_name)) +
+  geom_col() +
+  geom_text(aes(label = percent(avg_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Average Tip % by Payment Type",
+    x = "Payment Type",
+    y = "Average Tip %"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+```
+
+```{r}
+#  Only keep Flex fare, Credit card
+taxi <- taxi %>%
+  filter(payment_type_name %in% c("Flex fare", "Credit card"))
+
+head(taxi)
+
+#Payment type
+taxi %>%
+  group_by(payment_type_name) %>%
+  summarise(
+    avg_tip = mean(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(payment_type_name, avg_tip), y = avg_tip, fill = payment_type_name)) +
+  geom_col() +
+  geom_text(aes(label = percent(avg_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Average Tip % by Payment Type",
+    x = "Payment Type",
+    y = "Average Tip %"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+```
+# Section: Tipping Behavior by Vendor
+
+## Question: How does the median tip percentage vary across taxi vendors, and which vendor shows the highest tipping behavior?
+
+## Anaswer: Median tip percentages differ across vendors. Helix has the highest median tip (~28.0%), followed by Creative Mobile Technologies (~24.2%) and Curb Mobility (~23.4%). Myle Technologies shows a median tip of 0%, which likely reflects missing or unrecorded tip data rather than actual absence of tipping. Overall, Helix demonstrates the strongest tipping behavior among the vendors.
+
+```{r}
+#Vendor
+taxi %>%
+  group_by(Vendor_name) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(Vendor_name, median_tip), y = median_tip, fill = Vendor_name)) +
+  geom_col() +
+  geom_text(aes(label = percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Median Tip % by Vendor",
+    x = "Vendor",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Section: Tipping and Fare Patterns by Passenger Count
+
+## Question: How do median tip percentages and fare amounts vary with passenger count?
+
+## Answer: Median tip percentages remain relatively stable for smaller groups (1–6 passengers), generally ranging from about 23% to 27%, with a slight peak around 5–6 passengers (~27%). However, tipping drops noticeably for larger groups (7–9 passengers), with a sharp decline at 7 passengers (~10.2%) and lower values for 8–9 passengers.
+## Fare amounts show a different pattern: most rides with 1–4 passengers have a wide distribution with many outliers, indicating variability in trip distance and cost. As passenger count increases, fare variability decreases and fares become more concentrated, though generally higher for larger groups. Overall, while fares tend to rise and stabilize with more passengers, tipping behavior weakens for larger group sizes.
+
+
+```{r}
+taxi %>%
+  filter(
+    !is.na(passenger_count),
+    passenger_count > 0
+  ) %>%
+  group_by(passenger_count) %>%
+  summarise(
+    median_tip_pct = median(tip_percent_fare_amount),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = factor(passenger_count), y = median_tip_pct)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = scales::percent(median_tip_pct, accuracy = 0.1)),
+    vjust = -0.5,
+    size = 5
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 0.35)   #increase upper limit
+  ) +
+  labs(
+    title = "Median Tip % by Passenger Count",
+    x = "Passenger Count",
+    y = "Median Tip (%)"
+  ) +
+  theme_minimal()
+
+taxi %>%
+  filter(
+    !is.na(passenger_count),
+    passenger_count > 0
+  ) %>%
+  ggplot(aes(x = factor(passenger_count), y = fare_amount)) +
+  geom_boxplot() +
+  labs(
+    title = "Fare Amount Distribution by Passenger Count",
+    x = "Passenger Count",
+    y = "Fare Amount"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+taxi %>%
+  filter(
+    !is.na(passenger_count),
+    passenger_count > 0,
+    passenger_count < 7,
+    fare_amount < quantile(fare_amount, 0.95)  #remove top 1% outliers
+  ) %>%
+  ggplot(aes(x = factor(passenger_count), y = fare_amount)) +
+  geom_boxplot() +
+  labs(
+    title = "Fare Distribution by Passenger Count (Zoomed)",
+    x = "Passenger Count",
+    y = "Fare Amount"
+  ) +
+  theme_minimal()
+
+
+taxi %>%
+  filter(
+    !is.na(passenger_count),
+    passenger_count > 6
+  ) %>%
+  ggplot(aes(x = factor(passenger_count), y = fare_amount)) +
+  geom_boxplot() +
+  labs(
+    title = "Fare Distribution by Passenger Count (Zoomed)",
+    x = "Passenger Count",
+    y = "Fare Amount"
+  ) +
+  theme_minimal()
+```
+
+# Section: Impact of Fare Components on Tipping Behavior
+## Question: How do different fare components (fare amount, extras, taxes, and surcharges) influence median tip percentages?
+## Answer: Tipping decreases as fare amount increases (30.1% to 15.2%) and similarly declines with total amount (27.8% to 22.1%). In contrast, higher extras are linked to higher tips (12.3% to 27.7%). Tolls and airport fees have minimal impact. Some fees (MTA tax, improvement, congestion surcharge) lack variation, limiting insights. Higher CBD congestion fees also show lower tipping (23.6% to 14.8%).
+
+```{r}
+fee_columns <- c("fare_amount", "extra", "mta_tax", "tolls_amount",
+          "improvement_surcharge", "total_amount",
+          "congestion_surcharge", "Airport_fee", "cbd_congestion_fee")
+
+taxi <- taxi %>%
+  mutate(across(all_of(fee_columns), ~case_when(
+    . <= quantile(., 0.33, na.rm = TRUE) ~ "Low",
+    . <= quantile(., 0.66, na.rm = TRUE) ~ "Mid",
+    . >  quantile(., 0.66, na.rm = TRUE) ~ "High"
+  ), .names = "{.col}_group"))
+
+head(taxi)
+
+group_cols <- paste0(fee_columns, "_group")
+
+for (col in group_cols) {
+  
+  plot_data <- taxi %>%
+    group_by(.data[[col]]) %>%
+    summarise(
+      median_tip = median(tip_percent_fare_amount, na.rm = TRUE),  # ✅ changed
+      .groups = "drop"
+    ) %>%
+    rename(group = .data[[col]]) %>%
+    mutate(
+      group = factor(group, levels = c("Low", "Mid", "High"))
+    )
+  
+  p <- ggplot(plot_data, aes(x = group, y = median_tip, fill = group)) +
+    geom_col() +
+    geom_text(
+      aes(label = scales::percent(median_tip, accuracy = 0.1)),  # ✅ updated label
+      vjust = -0.3
+    ) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(
+      title = paste("Median Tip % (Fare) by", col),  # ✅ updated title
+      x = "Group",
+      y = "Median Tip %"
+    ) +
+    theme_minimal()
+  
+  print(p)
+}
+```
+
+
+# Import borough zone file
+
+```{r}
+
+#Getting Borough_Zone
+#Borough_Zone = read.csv(file.choose(), header = TRUE, stringsAsFactors = TRUE)
+Borough_Zone <- read.csv("C:/Users/sheng/Downloads/taxi_zone_lookup.csv")
+
+
+head(Borough_Zone)
+
+# Pickup
+taxi <- taxi %>%
+  left_join(Borough_Zone %>% select(LocationID, Borough, Zone),
+            by = c("PULocationID" = "LocationID")) %>%
+  mutate(pickup_location = paste(Borough, Zone, sep = " - ")) %>%
+  select(-Borough, -Zone)
+
+# Dropoff
+taxi <- taxi %>%
+  left_join(Borough_Zone %>% select(LocationID, Borough, Zone),
+            by = c("DOLocationID" = "LocationID")) %>%
+  mutate(dropoff_location = paste(Borough, Zone, sep = " - ")) %>%
+  select(-Borough, -Zone)
+
+#Checking Airport_fee > 0 when the pickup location Queens - LaGuardia Airport and Queens - JFK Airport
+taxi %>% filter(!is.na(Airport_fee) & Airport_fee > 0) %>% distinct(pickup_location)
+
+taxi <- taxi %>%
+  mutate(
+    airport_fee_status = case_when(
+      !is.na(Airport_fee) & Airport_fee > 0 &
+        !(pickup_location %in% c("Queens - LaGuardia Airport", 
+                                "Queens - JFK Airport")) ~ "False Charge",
+      
+      !is.na(Airport_fee) & Airport_fee > 0 ~ "Valid Charge",
+      
+      TRUE ~ "No Charge"
+    )
+  )
+
+```
+
+# Section: Impact of Airport Fee Validity on Tipping Behavior
+
+## Question: Does the presence of valid, invalid (false), or no airport fee affect median tip percentages?
+
+## Answer: Median tip percentages are fairly similar across all airport fee categories, with only minor differences. Trips with a false airport charge show slightly higher median tips (25.9%), compared to no charge (23.8%) and valid charges (23.3%). However, the differences are small, suggesting that airport fees (valid and incorrectly applied) do not meaningfully influence tipping behavior.
+
+```{r}
+taxi %>%
+  group_by(airport_fee_status) %>%
+  summarise(median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+            .groups = "drop") %>%
+  ggplot(aes(x = airport_fee_status, y = median_tip, fill = airport_fee_status)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 1)
+  ) +
+  labs(
+    title = "Median Tip % (Fare Amount)",
+    x = "False Airport Charge",
+    y = "Median Tip %"
+  ) +
+  theme_minimal()
+```
+
+# Section: Tipping Behavior by Pickup Borough
+
+## Question: How does median tip percentage vary across different pickup boroughs?
+
+## Answer: Median tip percentages vary notably by pickup borough. Manhattan (24.8%) and Queens (21.1%) show the highest tipping rates among major boroughs, indicating stronger tipping behavior in these areas. EWR (12.6%) has noticeably lower median tips. Meanwhile, Bronx, Brooklyn, and Staten Island show 0%, which likely reflects missing or unrecorded tip data rather than true absence of tipping. The “Unknown” category (25.4%) and "N/A" (7.3%) but may not be reliable due to unclear location data. Overall, tipping is strongest in high-traffic, central areas like Manhattan and Queens.
+
+
+```{r}
+taxi %>%
+  mutate(
+    pickup_borough = sub(" -.*", "", pickup_location)
+  ) %>%
+  group_by(pickup_borough) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(pickup_borough, median_tip), y = median_tip, fill = pickup_borough)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Tip % by Pickup Borough",
+    x = "Pickup Borough",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Section: Tipping Behavior by Dropoff Borough
+
+## Question: How does median tip percentage vary across different dropoff boroughs?
+
+## Answer: Median tip percentages vary across dropoff boroughs in a pattern similar to pickup locations. Manhattan (24.8%) and EWR (23.1%) show relatively high tipping rates, followed by Queens (13.2%) with moderate levels. Staten Island (2.2%) is much lower, while Bronx and Brooklyn show 0%, likely due to missing or unrecorded tip data rather than actual behavior. The “Unknown” category (25.6%) and "N/A" (16.1%) andmay not be reliable due to unclear location data. Overall, higher tipping is concentrated in major transit and central areas like Manhattan and airport routes.
+
+
+```{r}
+taxi %>%
+  mutate(
+    dropoff_borough = sub(" -.*", "", dropoff_location)
+  ) %>%
+  group_by(dropoff_borough) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(dropoff_borough, median_tip), y = median_tip, fill = dropoff_borough)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Tip % by Dropoff Borough",
+    x = "Dropoff Borough",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+#checking false cbd_congestion_fee
+taxi %>%
+  filter(
+    as.Date(tpep_pickup_datetime) < as.Date("2025-01-05") &
+    !is.na(cbd_congestion_fee) &
+    cbd_congestion_fee != 0
+  )
+```
+
+
+# Section: Tipping Patterns by Pickup–Dropoff Borough Pair
+
+## Question: How does median tip percentage vary across dropoff boroughs within each pickup borough?
+
+## Answer: Several patterns stand out: 
+### For Manhattan pickups, median tip percentages are generally highest for dropoffs to Manhattan (25.2%), EWR (23.5%), and Queens (23.1%), while dropoffs to Bronx (0%), Staten Island (6.7%) are much lower.
+### For Queens pickups, tipping is also relatively strong for dropoffs to Manhattan (23.3%), and EWR (22.5%), but lower for Staten Island and near zero for some local categories.
+### For EWR pickups, tips increase from EWR (11.5%) to Unknown (20.2%) to Manhattan (23.6%), suggesting airport-origin trips to central destinations tend to have stronger tipping.
+### For Unknown pickups, the highest tips appear for dropoffs to Manhattan, Staten Island, and Unknown (around 25%–26%), while EWR is much lower.
+### For Brooklyn, Bronx, and Staten Island pickups, many categories show 0%, which likely reflects very small sample sizes, missing values, or unrecorded tips, so these should be interpreted cautiously.
+
+## Overall, the strongest and most consistent tipping appears on trips involving Manhattan, Queens, and EWR, especially when trips connect major commercial or airport areas. In contrast, many outer-borough pickup/dropoff combinations appear sparse and may not be reliable enough for strong conclusions.
+
+
+```{r}
+# create borough columns once
+taxi <- taxi %>%
+  mutate(
+    pickup_borough = sub(" -.*", "", pickup_location),
+    dropoff_borough = sub(" -.*", "", dropoff_location)
+  )
+
+# loop through each pickup borough
+for (p in unique(taxi$pickup_borough)) {
+  
+  plot_data <- taxi %>%
+    filter(pickup_borough == p) %>%
+    group_by(dropoff_borough) %>%
+    summarise(
+      median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+  
+  p_plot <- ggplot(plot_data, aes(x = reorder(dropoff_borough, median_tip), y = median_tip)) +
+    geom_col(fill = "steelblue") +
+    geom_text(
+      aes(label = scales::percent(median_tip, accuracy = 0.1)),
+      vjust = -0.3,
+      size = 3
+    ) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(
+      title = paste("Median Tip % | Pickup:", p),
+      x = "Dropoff Borough",
+      y = "Median Tip %"
+    ) +
+    theme_minimal()
+  
+  print(p_plot)
+}
+
+
+
+
+```
+
+# Section: Tipping and Fare Patterns by Rate Code
+
+## Question: How do median tip percentages and median fare amounts vary across different rate codes?
+
+## Answer: Median tip percentages vary moderately across rate codes, while median fares differ substantially. Standard trips have the highest median tip percentage (27.0%) despite also having the lowest median fare ($12.80), suggesting riders tip a larger percentage on regular lower-cost trips. JFK and Newark trips show slightly lower median tip percentages (23.1% and 23.2%) but much higher median fares ($70.00 and $85.30). Negotiated (median fare $70) and Nassau/Westchester trips have the lowest nonzero median tip percentages (20.2% and 20.4%), even though Nassau/Westchester has the highest median fare ($104.50). The Unknown rate code shows a 0% median tip and a relatively low fare ($19.73), which likely reflects missing or unreliable data. Overall, higher-fare rate codes tend to have lower tip percentages, reinforcing the earlier pattern that passengers tip proportionally less on more expensive trips.
+
+
+```{r}
+#Rate code
+taxi %>%
+  group_by(Ratecode_name) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(Ratecode_name, median_tip), y = median_tip, fill = Ratecode_name)) +
+  geom_col() +
+  geom_text(aes(label = percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = percent_format(), expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Median Tip % by Rate Code",
+    x = "Rate Code",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+
+
+taxi %>%
+  group_by(Ratecode_name) %>%
+  summarise(
+    median_fare = median(fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = reorder(Ratecode_name, median_fare), y = median_fare, fill = Ratecode_name)) +
+  geom_col() +
+  geom_text(aes(label = scales::dollar(median_fare)), vjust = -0.3) +
+  scale_y_continuous(labels = scales::dollar_format(),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Median Fare Amount by Rate Code",
+    x = "Rate Code",
+    y = "Median Fare ($)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+
+```
+
+# Creating Time Related Features.
+
+```{r}
+library(dplyr)
+
+taxi <- taxi %>%
+  mutate(
+    trip_duration_mins = as.numeric(difftime(
+      tpep_dropoff_datetime,
+      tpep_pickup_datetime,
+      units = "mins"
+    )),
+    
+    weekday = factor(
+      weekdays(tpep_pickup_datetime),
+      levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    ),
+    
+    month = factor(
+      months(tpep_pickup_datetime),
+      levels = month.name
+    ),
+    
+    pickup_hour = as.integer(format(tpep_pickup_datetime, "%H")),
+    
+    pickup_time_of_day = case_when(
+      pickup_hour >= 5  & pickup_hour < 12 ~ "Morning",
+      pickup_hour >= 12 & pickup_hour < 17 ~ "Afternoon",
+      pickup_hour >= 17 & pickup_hour < 21 ~ "Evening",
+      TRUE ~ "Night"
+    )
+  )
+
+taxi <- taxi %>%
+  mutate(
+    pickup_time_of_day = factor(
+      pickup_time_of_day,
+      levels = c("Morning", "Afternoon", "Evening", "Night")
+    )
+  )
+
+```
+
+
+# Section: Tipping Patterns by Pickup Borough, Dropoff Borough, and Time of Day
+
+## Question: How does median tip percentage vary by route and time of day across pickup boroughs?
+
+## Answer: The time-of-day breakdown generally reinforces the earlier borough-pair findings, but it also shows that tipping patterns vary meaningfully within the same route depending on when the trip occurs.
+
+## For the major pickup boroughs:
+
+### Manhattan pickups show consistently strong tipping across most times of day, especially for dropoffs to Manhattan, Unknown, Queens, and EWR, which are often in the 22%–27% range. Some routes such as Brooklyn are also strong in the afternoon and evening, while Bronx, Staten Island, and N/A tend to be lower or inconsistent.
+### Queens pickups also show stable, relatively high tipping across Brooklyn, EWR, Manhattan, and Unknown dropoffs, usually around 20%–24% across morning, afternoon, evening, and night. This suggests Queens-origin trips have more consistent tipping behavior than many other boroughs.
+### Unknown pickups display wide variation by destination and time, but several combinations still show high tipping, especially toward Manhattan, Queens, Staten Island, and Unknown itself, often above 20%.
+### EWR pickups mainly show stronger tipping on trips going to Manhattan, with values roughly between 13% and 24% depending on time of day, while other destinations are sparse or zero.
+### Brooklyn, Bronx, and Staten Island pickups remain much sparser. Their patterns are dominated by zeros or isolated nonzero routes, which suggests small sample sizes or missing observations rather than stable tipping behavior.
+
+## Overall, the clearest pattern is that routes involving Manhattan, Queens, and EWR consistently exhibit the highest tipping behavior, and this trend remains stable across different times of day.
+
+
+```{r}
+for (borough in unique(taxi$pickup_borough)) {
+  plot_data <- taxi %>%
+    filter(pickup_borough == borough) %>%
+    group_by(dropoff_borough, pickup_time_of_day) %>%
+    summarise(
+      median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  plot_obj <- ggplot(
+    plot_data,
+    aes(x = dropoff_borough, y = median_tip, fill = dropoff_borough)
+  ) +
+    geom_col() +
+    geom_text(
+      aes(label = scales::percent(median_tip, accuracy = 0.1)),
+      vjust = -0.3,
+      size = 3
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format(),
+      expand = expansion(mult = c(0, 0.15))
+    ) +
+    facet_wrap(~ pickup_time_of_day) +
+    labs(
+      title = paste("Median Tip % | Pickup Borough:", borough),
+      x = "Dropoff Borough",
+      y = "Median Tip %"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1),
+      legend.position = "none"
+    )
+
+  print(plot_obj)
+}
+```
+
+# Section: Tipping Behavior by Weekday
+
+## Question: How does median tip percentage vary across different days of the week?
+## Answer: Median tip percentages are relatively consistent throughout the week, generally ranging between 22% and 25%. Weekdays (Monday–Thursday) show slightly higher tipping levels (around 24%–24.6%), with Tuesday being the highest (24.6%). Tipping gradually declines toward the weekend, with Friday (23.2%), Saturday (22.2%), and Sunday (22.3%) showing slightly lower values. Overall, tipping behavior is stable across days, with only a modest decrease on weekends.
+
+
+```{r}
+taxi %>% 
+  filter(trip_duration_mins > 0) %>%
+  group_by(weekday) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = weekday, y = median_tip, fill = weekday)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Median Tip % by Weekday",
+    x = "Weekday",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Section: Tipping Behavior by Month
+
+## Question: How does median tip percentage vary across different months of the year?
+## Answer: Median tip percentages remain relatively stable throughout the year, generally ranging between 21% and 25%. Tipping is slightly higher in the early months, with January (25.4%) and April (24.8%) among the highest. Mid-year months (May–September) show a small dip, mostly around 23%, before slightly increasing again in October (24.0%) and November (24.1%). December (21.4%) has the lowest median tip percentage. Overall, tipping behavior shows minor seasonal variation but remains fairly consistent across months.
+
+```{r}
+taxi %>% 
+  group_by(month) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = month, y = median_tip, fill = factor(month))) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(median_tip, accuracy = 0.1)), vjust = -0.3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Median Tip % by Month",
+    x = "Month",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+
+# Section: Tipping Behavior by Time of Day
+
+## Question: How does median tip percentage vary across different times of the day?
+## Answer: Median tip percentages vary more noticeably by time of day compared to weekday or month. Morning (24.5%) and afternoon (24.6%) have the highest tipping levels, indicating stronger tipping behavior during earlier parts of the day. Tipping drops significantly in the evening (18.7%), before slightly increasing again at night (20.1%). Overall, the median tip is more during the day and less during later hours, with the lowest median tipping occurring in the evening.
+
+```{r}
+taxi %>%
+  group_by(pickup_time_of_day) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = pickup_time_of_day, y = median_tip, fill = pickup_time_of_day)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Tip % by Time of Day",
+    x = "Time of Day",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Section Title: Tipping Behavior by Payment Type
+
+## Question : How does average tip percentage vary by payment type, and which payment methods provide meaningful insights into tipping behavior?
+
+## Answer: The median tipstays steady in the morning/afternoon (24–26%) across all days, but drops in the evening (16–22%), especially on weekends. Night median tips are slightly higher than evening but still lower than daytime (15–22%). Overall, time of day matters more than weekday, with highest median tipping during the day and lower median tip at night, particularly on weekends.
+
+```{r}
+taxi %>%
+  group_by(weekday, pickup_time_of_day) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = weekday, y = median_tip, fill = weekday)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3,
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  facet_wrap(~ pickup_time_of_day) +
+  labs(
+    title = "Median Tip % by Weekday (Faceted by Time of Day)",
+    x = "Weekday",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+```
+
+
+```{r}
+taxi %>% filter(trip_duration_mins <= 0) %>% arrange(trip_duration_mins)
+
+taxi %>% filter(trip_duration_mins > 300)%>% arrange(trip_duration_mins)
+```
+
+# Section: Tipping Behavior by Trip Duration
+
+## Question: How does median tip percentage vary across different trip duration ranges?
+
+## Answer: Median tip percentages are highest for shorter trips and generally decline as trip duration increases. Trips lasting 0–5 minutes have the highest median tip percentage (34.5%), followed by 5–10 minutes (29.3%) and 10 minutes or less overall, which remain relatively high. Tipping then decreases for longer trips, falling to around 23.5% for 10–20 minutes, 18.0% for 20–30 minutes, 18.5% for 30–60 minutes, and reaching the lowest level for trips over 60 minutes (14.3%). Overall, passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+
+
+```{r}
+taxi %>%
+  mutate(duration_bucket = case_when(
+    trip_duration_mins <= 0 ~ "≤0",
+    trip_duration_mins <= 5 ~ "0–5",
+    trip_duration_mins <= 10 ~ "5–10",
+    trip_duration_mins <= 20 ~ "10–20",
+    trip_duration_mins <= 30 ~ "20–30",
+    trip_duration_mins <= 60 ~ "30–60",
+    TRUE ~ "60+"
+  )) %>%
+  group_by(duration_bucket) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(duration_bucket = factor(duration_bucket,
+    levels = c("≤0","0–5","5–10","10–20","20–30","30–60","60+")
+  )) %>%
+  ggplot(aes(x = duration_bucket, y = median_tip, fill = duration_bucket)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Tip % by Trip Duration",
+    x = "Trip Duration (minutes)",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Section: Fare Amount by Trip Duration
+
+## Question: How does median fare amount vary across different trip duration ranges?
+
+## Answer: Median fare amount increases steadily as trip duration gets longer. Very short trips have the lowest fares, with 0–5 minutes ($5.80) and 5–10 minutes ($9.30). Fares rise for medium-length trips, reaching about $14.90 for 10–20 minutes and $24.70 for 20–30 minutes. Longer trips show much higher median fares, increasing to $43.50 for 30–60 minutes and peaking at $70.00 for trips over 60 minutes. Overall, longer trip duration is strongly associated with higher fare amounts.
+
+```{r}
+taxi %>%
+  mutate(duration_bucket = case_when(
+    trip_duration_mins <= 0 ~ "≤0",
+    trip_duration_mins <= 5 ~ "0–5",
+    trip_duration_mins <= 10 ~ "5–10",
+    trip_duration_mins <= 20 ~ "10–20",
+    trip_duration_mins <= 30 ~ "20–30",
+    trip_duration_mins <= 60 ~ "30–60",
+    TRUE ~ "60+"
+  )) %>%
+  group_by(duration_bucket) %>%
+  summarise(
+    median_fare = median(fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(duration_bucket = factor(duration_bucket,
+    levels = c("≤0","0–5","5–10","10–20","20–30","30–60","60+")
+  )) %>%
+  ggplot(aes(x = duration_bucket, y = median_fare, fill = duration_bucket)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::dollar(median_fare)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::dollar_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Fare by Trip Duration",
+    x = "Trip Duration (minutes)",
+    y = "Median Fare ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Section: Tipping Behavior by Trip Distance
+
+## Question: How does median tip percentage vary across different trip distance ranges?
+
+## Answer: Median tip percentages are highest for short-distance trips and generally decline as distance increases. Trips between 0–1 mile have the highest median tip percentage (31.1%), followed by 1–2 miles (26.7%). Tipping then drops for medium-distance trips, reaching 19.8% for 2–5 miles and 11.2% for 5–10 miles. For longer trips, tip percentages recover somewhat but remain lower than very short trips, at about 20.8% for 10–20 miles and 20.5% for 20+ miles. The ≤0 distance group shows 0%, which likely reflects invalid or anomalous records rather than meaningful tipping behavior. Overall, passengers tend to tip a higher percentage on shorter trips, with the lowest tipping observed for mid-range trips around 5–10 miles.
+
+
+```{r}
+taxi %>%
+  mutate(distance_bucket = case_when(
+    trip_distance <= 0 ~ "≤0",
+    trip_distance <= 1 ~ "0–1",
+    trip_distance <= 2 ~ "1–2",
+    trip_distance <= 5 ~ "2–5",
+    trip_distance <= 10 ~ "5–10",
+    trip_distance <= 20 ~ "10–20",
+    TRUE ~ "20+"
+  )) %>%
+  group_by(distance_bucket) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(distance_bucket = factor(distance_bucket,
+    levels = c("≤0","0–1","1–2","2–5","5–10","10–20","20+")
+  )) %>%
+  ggplot(aes(x = distance_bucket, y = median_tip, fill = distance_bucket)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Tip % by Trip Distance",
+    x = "Trip Distance",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Section: Fare Amount by Trip Distance
+
+## Question: How does median fare amount vary across different trip distance ranges?
+
+## Answer: Median fare amount generally increases as trip distance increases. Very short trips of 0–1 mile have the lowest median fare ($7.20), followed by 1–2 miles ($11.40) and 2–5 miles ($19.10). Fares rise further for longer distances, reaching about $32.80 for 5–10 miles, $59.70 for 10–20 miles, and $70.00 for 20+ miles. The ≤0 distance group shows a relatively high median fare ($20.00), which likely reflects invalid or anomalous trip records rather than a meaningful pattern. Overall, fare amount increases strongly with trip distance.
+
+```{r}
+taxi %>%
+  mutate(distance_bucket = case_when(
+    trip_distance <= 0 ~ "≤0",
+    trip_distance <= 1 ~ "0–1",
+    trip_distance <= 2 ~ "1–2",
+    trip_distance <= 5 ~ "2–5",
+    trip_distance <= 10 ~ "5–10",
+    trip_distance <= 20 ~ "10–20",
+    TRUE ~ "20+"
+  )) %>%
+  group_by(distance_bucket) %>%
+  summarise(
+    median_fare = median(fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(distance_bucket = factor(distance_bucket,
+    levels = c("≤0","0–1","1–2","2–5","5–10","10–20","20+")
+  )) %>%
+  ggplot(aes(x = distance_bucket, y = median_fare, fill = distance_bucket)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::dollar(median_fare)),
+    vjust = -0.3
+  ) +
+  scale_y_continuous(
+    labels = scales::dollar_format(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Median Fare by Trip Distance",
+    x = "Trip Distance",
+    y = "Median Fare ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+taxi %>%
+  filter(trip_distance > 0) %>%
+  mutate(distance_bucket = case_when(
+    trip_distance <= 1 ~ "0–1",
+    trip_distance <= 2 ~ "1–2",
+    trip_distance <= 5 ~ "2–5",
+    trip_distance <= 10 ~ "5–10",
+    trip_distance <= 20 ~ "10–20",
+    TRUE ~ "20+"
+  )) %>%
+  group_by(payment_type_name, distance_bucket) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(distance_bucket = factor(distance_bucket,
+    levels = c("0–1","1–2","2–5","5–10","10–20","20+")
+  )) %>%
+  ggplot(aes(x = distance_bucket, y = median_tip, fill = payment_type_name)) +
+  geom_col(position = "dodge") +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    position = position_dodge(width = 0.9),
+    vjust = -0.3,
+    size = 3
+  ) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Median Tip % by Distance and Payment Type",
+    x = "Trip Distance",
+    y = "Median Tip %"
+  ) +
+  theme_minimal()
+```
+
+# Section: Tipping Behavior by Trip Distance and Passenger Count
+
+## Question: How does median tip percentage vary by trip distance when broken down by passenger count?
+
+## Answer: For passenger counts 1–6, tipping is highest on short trips (0–1 mile: ~31–33%) and declines with distance (~20–23% for 10+ miles), showing a consistent pattern across group sizes. For larger groups (7–9), data is sparse and inconclusive. Overall, trip distance has a stronger impact on tipping than passenger count.
+
+```{r}
+taxi %>%
+  filter(trip_distance > 0, passenger_count > 0) %>%
+  mutate(distance_bucket = case_when(
+    trip_distance <= 1 ~ "0–1",
+    trip_distance <= 2 ~ "1–2",
+    trip_distance <= 5 ~ "2–5",
+    trip_distance <= 10 ~ "5–10",
+    trip_distance <= 20 ~ "10–20",
+    TRUE ~ "20+"
+  )) %>%
+  group_by(passenger_count, distance_bucket) %>%
+  summarise(
+    median_tip = median(tip_percent_fare_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(distance_bucket = factor(distance_bucket,
+    levels = c("0–1","1–2","2–5","5–10","10–20","20+")
+  )) %>%
+  ggplot(aes(x = distance_bucket, y = median_tip, fill = distance_bucket)) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(median_tip, accuracy = 0.1)),
+    vjust = -0.3,
+    size = 3
+  ) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.3))) +
+  facet_wrap(~ passenger_count) +
+  labs(
+    title = "Median Tip % by Distance (Faceted by Passenger Count)",
+    x = "Trip Distance",
+    y = "Median Tip %"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Section: Relationship Between Tip Percentage and Trip Duration
+
+## Question: What is the relationship between tip percentage and trip duration?
+## Answer: The scatter plot with a fitted trend line shows a clear negative relationship between tip percentage and trip duration. As trip duration increases, the tip percentage generally decreases. Short trips exhibit a wide range of tipping behavior, including many higher tip percentages, while longer trips tend to cluster at lower tip percentages with less variability. This confirms earlier findings that passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+
+```{r}
+taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    #fare_amount > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 4
+  ) %>%
+  filter(
+    trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE)
+    #fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = trip_duration_mins, y = tip_percent_fare_amount)) +
+  geom_jitter(alpha = 0.2) +
+  geom_smooth( method = 'lm')+
+  labs(
+    title = "Tip % vs Trip Duration",
+    x = "Trip Duration (minutes)",
+    y = "Tip %"
+  ) +
+  theme_minimal()
+
+
+taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    #fare_amount > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 4
+  ) %>%
+  filter(
+    trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE)
+    #fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = log1p(trip_duration_mins), y = tip_percent_fare_amount)) +
+  geom_jitter(alpha = 0.2) +
+  geom_smooth( method = 'lm')+
+  labs(
+    title = "Tip % vs Trip Duration",
+    x = "Trip Duration (minutes)",
+    y = "Tip %"
+  ) +
+  theme_minimal()
+```
+# Section: Relationship Between Tip Percentage and Trip Distance
+
+## Question: What is the relationship between tip percentage and trip distance?
+## Answer: The scatter plot and trend line show a clear negative relationship between tip percentage and trip distance. As trip distance increases, the tip percentage generally decreases. Short-distance trips display a wide spread of tipping behavior, including many higher tip percentages, while longer-distance trips are more concentrated at lower tip percentages with less variability. This reinforces earlier findings that passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+
+```{r}
+taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    #fare_amount > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 4
+  ) %>%
+  filter(
+    trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE)
+    #fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = trip_distance, y = tip_percent_fare_amount)) +
+  geom_jitter(alpha = 0.2) +
+  geom_smooth( method = 'lm')+
+  labs(
+    title = "Tip % vs Trip Distance",
+    x = "Trip Distance (miles)",
+    y = "Tip %"
+  ) +
+  theme_minimal()
+
+
+taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    #fare_amount > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 4
+  ) %>%
+  filter(
+    trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE)
+    #fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = log1p(trip_distance), y = tip_percent_fare_amount)) +
+  geom_jitter(alpha = 0.2) +
+  geom_smooth( method = 'lm')+
+  labs(
+    title = "Tip % vs Trip Distance",
+    x = "Trip Distance (miles)",
+    y = "Tip %"
+  ) +
+  theme_minimal()
+```
+# Section: Relationship Between Tip Percentage and Fare Amount
+
+## Question: What is the relationship between tip percentage and fare amount?
+## Answer: The scatter plot indicates a negative relationship between tip percentage and fare amount. As fare amount increases, the tip percentage tends to decline, as shown by the downward-sloping trend line. Lower fare trips exhibit greater variability and often include higher tip percentages, while higher fare trips are more tightly clustered at lower tip percentages. This suggests that riders are less likely to tip a high percentage on more expensive trips, even though the absolute tip amount may still be larger.
+
+
+```{r}
+taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 4
+  ) %>%
+  filter(
+    #trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE)
+    #fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = log1p(fare_amount), y = tip_percent_fare_amount)) +
+  geom_jitter(alpha = 0.2) +
+  geom_smooth( method = 'lm')+
+  labs(
+    title = "Tip % vs Fare Amount",
+    x = "Fare Amount",
+    y = "Tip %"
+  ) +
+  theme_minimal()
+```
+# Section: Predictive Performance of the Tip Percentage Model
+
+## Question: How well does the linear regression model predict tip percentage withour removing outliers?
+## Answer: The linear regression model shows moderate predictive accuracy. On the test set, it achieves an RMSE of about 0.422 and an MAE of about 0.149. This means the model’s predictions deviate from the actual tip percentage by about 14.9 percentage points on average, with larger errors reflected in the RMSE. Overall, the model captures some of the variation in tipping behavior, but prediction error remains substantial, suggesting that tip percentage is influenced by additional nonlinear or unobserved factors not fully captured by the model.
+
+```{r}
+set.seed(123)
+
+train_idx <- sample(seq_len(nrow(taxi)), size = 0.8 * nrow(taxi))
+
+summary(taxi)
+
+train <- taxi[train_idx, ]
+test  <- taxi[-train_idx, ]
+
+model <- lm(
+  tip_percent_fare_amount ~ 
+    trip_distance +
+    trip_duration_mins +
+    fare_amount +
+    payment_type_name +
+    pickup_time_of_day +
+    weekday +
+    pickup_borough +
+    dropoff_borough +
+    Ratecode_name,
+  data = train
+)
+
+#summary(model)
+#confint(model)
+
+pred <- predict(model, newdata = test)
+
+library(caret)
+
+RMSE(pred, test$tip_percent_fare_amount)
+MAE(pred, test$tip_percent_fare_amount)
+```
+
+## Section: Model Performance After Data Cleaning
+
+## Question: How does the linear regression model perform after cleaning the data?
+## Answer: After removing outliers and restricting tip percentages to a reasonable range, the model’s performance improves substantially. The test set results show an RMSE of about 0.098 and an MAE of about 0.067, indicating much smaller prediction errors compared to the earlier model.
+## Additionally, the training set metrics (RMSE ≈ 0.098, MAE ≈ 0.067) are very close to the test set results, suggesting no significant overfitting and good generalization. Overall, data cleaning greatly enhances model stability and predictive accuracy, highlighting the importance of handling extreme values in tipping behavior analysis.
+
+
+```{r}
+taxi_clean <- taxi %>%
+  filter(
+    trip_distance > 0,
+    trip_duration_mins > 0,
+    fare_amount > 0,
+    tip_percent_fare_amount >= 0,
+    tip_percent_fare_amount <= 1
+  ) %>%
+  filter(
+    trip_distance <= quantile(trip_distance, 0.99, na.rm = TRUE),
+    trip_duration_mins <= quantile(trip_duration_mins, 0.99, na.rm = TRUE),
+    fare_amount <= quantile(fare_amount, 0.99, na.rm = TRUE)
+  )
+
+summary(taxi_clean)
+
+set.seed(123)
+
+train_idx_clean <- sample(seq_len(nrow(taxi_clean)), size = 0.8 * nrow(taxi_clean))
+
+train_clean <- taxi_clean[train_idx_clean, ]
+test_clean  <- taxi_clean[-train_idx_clean, ]
+
+
+model_clean <- lm(
+  tip_percent_fare_amount ~ 
+    trip_distance +
+    trip_duration_mins +
+    fare_amount +
+    payment_type_name +
+    pickup_time_of_day +
+    weekday +
+    pickup_borough +
+    dropoff_borough +
+    Ratecode_name,
+  data = train_clean
+)
+
+summary(model_clean)
+confint(model_clean)
+
+pred_clean <- predict(model_clean, newdata = test_clean)
+
+RMSE(pred_clean, test_clean$tip_percent_fare_amount)
+MAE(pred_clean, test_clean$tip_percent_fare_amount)
+
+# Train predictions
+pred_train <- predict(model_clean, newdata = train_clean)
+
+# Train metrics
+RMSE(pred_train, train_clean$tip_percent_fare_amount)
+MAE(pred_train, train_clean$tip_percent_fare_amount)
+```
+
+
+
+
+```{r}
+model_improved <- lm(
+  tip_percent_fare_amount ~
+    log1p(trip_distance) +
+    log1p(trip_duration_mins) + I(log1p(trip_duration_mins)^2) +
+    log1p(fare_amount) +
+    payment_type_name +
+    pickup_time_of_day * weekday +
+    pickup_borough +
+    dropoff_borough +
+    Ratecode_name,
+  data = train_clean
+)
+
+pred_clean_improved <- predict(model_improved, newdata = test_clean)
+
+RMSE(pred_clean_improved, test_clean$tip_percent_fare_amount)
+MAE(pred_clean_improved, test_clean$tip_percent_fare_amount)
+
+
+# Train predictions
+pred_train_improved <- predict(model_improved, newdata = train_clean)
+
+# Train metrics
+RMSE(pred_train_improved, train_clean$tip_percent_fare_amount)
+MAE(pred_train_improved, train_clean$tip_percent_fare_amount)
+
+```
+
