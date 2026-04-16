@@ -54,6 +54,13 @@ taxi <- taxi %>%
     month= month(tpep_pickup_datetime,label=TRUE, abbr=FALSE),
     weekday = wday(tpep_pickup_datetime,label=TRUE,abbr=FALSE),
     duration = as.numeric(difftime(tpep_dropoff_datetime, tpep_pickup_datetime,units="mins")), # duration in minutes
+    pickup_hour = hour(tpep_pickup_datetime),
+    pickup_time_of_day = factor(case_when(
+      pickup_hour >= 5  & pickup_hour < 12 ~ "Morning",
+      pickup_hour >= 12 & pickup_hour < 17 ~ "Afternoon",
+      pickup_hour >= 17 & pickup_hour < 21 ~ "Evening",
+      TRUE ~ "Night"
+    ), levels = c("Morning","Afternoon","Evening","Night")),
     # Vendor labels
     Vendor_name = case_when(
       VendorID == 1 ~ "Creative Mobile Technologies",
@@ -84,7 +91,8 @@ taxi <- taxi %>%
       payment_type == 6 ~ "Voided trip",
       TRUE ~ "Unknown"
     ),
-    tip_pct = tip_amount/fare_amount)
+    tip_pct = tip_amount/fare_amount
+  )
 ```
 
 ```{r extreme-tip-values}
@@ -107,16 +115,16 @@ taxi <- taxi %>%
          trip_distance > 0,        # only trips with distances
          payment_type %in% c(0,1), # only payment types flex fare and credit card
          duration > 0,             # only where drive time is positive
-         fare_amount > 0)          # only relevent charged trips
+         fare_amount > 0,          # only relevent charged trips
+         trip_distance < 100)      # trips over 100 miles must be an input error
 dim(taxi)                          # filters limit to 28.8M records instead of > 40M
 ```
 
 ```{r sampling}
 # Sampled data to run aggregate analysis and employ CLT
 set.seed(123)
-sample_ids <- sample(1:dim(taxi)[1],1000)
-taxi_sample <- taxi[sample_ids,]
-
+taxi_sample <- taxi %>% group_by(Borough_pickup) %>%
+  slice_sample(n=500) %>% ungroup()
 ```
 
 
@@ -178,42 +186,6 @@ ggplot(data.frame(mean_tip_pct_holder),aes(mean_tip_pct_holder))+geom_histogram(
 
 boroughs <- unique(taxi$Borough_pickup)
 
-pu_results <- data.frame(
-  Borough = character(),
-  mean_tip = numeric(),
-  mean_fare = numeric(),
-  mean_tip_pct = numeric(),
-  mean_dist = numeric(),
-  stringsAsFactors = FALSE
-)
-
-for (b in boroughs) {
-  borough_data <- taxi %>% filter(Borough_pickup == b)
-
-  for (i in 1:1000) {
-    id <- sample(1:nrow(borough_data), 100)
-
-    tmp <- borough_data[id, ] %>%
-      filter(tip_amount / fare_amount < 1) %>%
-      summarize(
-        mean_tip      = mean(tip_amount),
-        mean_fare     = mean(fare_amount),
-        mean_tip_pct  = mean(tip_amount / fare_amount),
-        mean_dist     = mean(trip_distance)
-      )
-
-    pu_results <- rbind(
-      pu_results,
-      data.frame(
-        Borough = b,
-        mean_tip = tmp$mean_tip,
-        mean_fare = tmp$mean_fare,
-        mean_tip_pct = tmp$mean_tip_pct,
-        mean_distance = tmp$mean_dist
-      )
-    )
-  }
-}
 full_results <- data.frame(
   PU_Borough = character(),
   DO_Borough = character(),
@@ -221,9 +193,10 @@ full_results <- data.frame(
   mean_fare = numeric(),
   mean_tip_pct = numeric(),
   mean_distance = numeric(),
+  mean_duration = numeric(),
   stringsAsFactors = FALSE
 )
-
+set.seed(123)
 for (b in boroughs) {
 
   pu_data <- taxi %>% filter(Borough_pickup == b)
@@ -242,7 +215,8 @@ for (b in boroughs) {
           mean_tip      = mean(tip_amount),
           mean_fare     = mean(fare_amount),
           mean_tip_pct  = mean(tip_amount / fare_amount),
-          mean_dist     = mean(trip_distance)
+          mean_dist     = mean(trip_distance),
+          mean_duration = mean(duration)
         )
 
       full_results <- rbind(
@@ -253,7 +227,8 @@ for (b in boroughs) {
           mean_tip = tmp$mean_tip,
           mean_fare = tmp$mean_fare,
           mean_tip_pct = tmp$mean_tip_pct,
-          mean_distance = tmp$mean_dist
+          mean_distance = tmp$mean_dist,
+          mean_duration = tmp$mean_duration
         )
       )
     }
@@ -263,49 +238,52 @@ for (b in boroughs) {
 ```
 </div>
 
-<div data-plot-id="mean_tip_by_borough"
-     data-tags="tips,tip,amount,borough,sampling, distribution,taxi">
+<div data-plot-id="mean_tip_by_pickup_borough"
+     data-tags="tips,tip,amount,borough,sampling,pickup,distribution,taxi">
 ```{r}
 # On average, we see higher tips for pickup locations in EWR and Queens while we see lower tips for pickup locations in Bronx, Brooklyn, and Staten Island
-pu_results %>% ggplot(aes(mean_tip,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
-  labs(title = "Sampling Distribution of Mean Tips by Borough", x="Mean Tip Amounts", y="Count")
+full_results %>% ggplot(aes(mean_tip,fill=PU_Borough)) + geom_histogram(col="black")+ facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Tips by Pickup Borough", x="Mean Tip Amounts", y="Count")
 ```
 </div>
 
 <div data-plot-id="mean_tip_by_pickup_and_dropoff_borough"
      data-tags="tips,tip,amount,borough,sampling,distribution,taxi,pickup,dropoff">
 ```{r}
-# On average, we see higher tips for pickup locations in EWR and Queens while we see lower tips for pickup locations in Bronx, Brooklyn, and Staten Island
+# Trips between EWR and Queens or between Queens and EWR have the highest average tips
+# Trips with Pickup or dropoff in Bronx typically have lower average tips
+# trips with pickup and drop off in Manhattan have low tips
 plot_data = full_results %>%
   group_by(PU_Borough,DO_Borough) %>%
   summarize(mean_tip = mean(mean_tip), .groups="drop")
 
 plot_data %>% ggplot(aes(DO_Borough, mean_tip,fill=DO_Borough)) + geom_col()+ facet_wrap(~PU_Borough)+
-  labs(title = "Sampling Distribution of Mean Tips by Borough", x="Mean Tip Amounts", y="Count")
+  labs(title = "Sampling Distribution of Mean Tips by Pickup Borough", x="Mean Tip Amounts", y="Count")
 ```
 </div> 
 
-<div data-plot-id="mean_fare_by_borough"
-     data-tags="fare,amount,borough,sampling, distribution,taxi">
+<div data-plot-id="mean_fare_by_pickup_borough"
+     data-tags="fare,amount,borough,sampling,pickup,distribution,taxi">
 ```{r}
 # We see the highest average fares for pickup locations in EWR while we see our lowest average fares for pickup locations in Bronx, Brooklyn, and Staten Island with medium average fares for pickup locations in Queens
-results %>% ggplot(aes(mean_fare,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
-  labs(title = "Sampling Distribution of Mean Fares by Borough", x="Mean Fare Amounts", y="Count")
+full_results %>% ggplot(aes(mean_fare,fill=PU_Borough)) + geom_histogram(col="black")+ facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Fares by Pickup Borough", x="Mean Fare Amounts", y="Count")
 ```
 </div>
 
-<div data-plot-id="mean_tip_pct_by_borough"
-     data-tags="tip,tips,percent,borough,sampling, distribution,taxi">
+<div data-plot-id="mean_tip_pct_by_pickup_borough"
+     data-tags="tip,tips,percent,borough,sampling,pickup,distribution,taxi">
 ```{r}
 # We see the highest average tip percent for pickup locations in Manhattan while we see the lowest average tip percents for pickup locations in Bronx, Brooklyn, and Staten Island with mid-range average tip percents for pickup locations in EWR and Queens
-results %>% ggplot(aes(mean_tip_pct,fill=Borough)) + geom_histogram(col="black")+ facet_wrap(~Borough)+
-  labs(title = "Sampling Distribution of Mean Tip Percent of Fare by Borough", x="Mean Tip Percent Amounts", y="Count")
+full_results %>% ggplot(aes(mean_tip_pct,fill=PU_Borough)) + geom_histogram(col="black")+ facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Tip Percent of Fare by Pickup Borough", x="Mean Tip Percent Amounts", y="Count")
 ```
 </div>
-<div data-table-id="Insights-tips-fare-percent-by-borough"
-     data-table-tags="insights, tips,fares,percent,borough">
+
+<div data-plot-id="Insights_tips_fare_percent_by_pickup_borough"
+     data-table-tags="insights,tips,fares,percent,borough,distances">
 ```{r insights}
-insights <- data.frame(Borough = c("Bronx","Brooklyn","EWR","Manhattan","N/A","Queens","Staten Island","Unknown"),
+insights <- data.frame(Pickup_Borough = c("Bronx","Brooklyn","EWR","Manhattan","N/A","Queens","Staten Island","Unknown"),
                        Tips = c("Low","Low","High","Low","High","High","Low","Medium"),
                        Fares = c("Low","Low","High","Low","High","Medium","Low","Low"),
                        Percent = c("Low","Low","Medium","High","Medium","Medium","Low","High"))
@@ -314,5 +292,69 @@ insights <- data.frame(Borough = c("Bronx","Brooklyn","EWR","Manhattan","N/A","Q
 # For pickup locations in Manhattan and Unknown, fares are low, so even with a high percentage, average tips will still be low
 # No pickup boroughs had high average fares and low average tips
 insights
+```
+</div>
+<div data-plot-id="mean_distance_by_pickup_borough"
+     data-tags="distance,borough,sampling,pickup,distribution,taxi">
+```{r}
+# Trips with pickup in the Bronx have various average distances from 0 to 40 miles
+# Trips with pickup in EWR and Queens have normally distributed average distances with averages around 15 miles
+# Trips with pickup in Manhattan all average under 25 miles
+# Trips with pickup in Staten Island have various average distances from 0 to 30 Miles
+full_results %>% ggplot(aes(mean_distance,fill=PU_Borough)) + geom_histogram(col="black")+ facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Trip Distances by Borough", x="Mean Trip Distance", y="Count")+
+  xlim(0,40)
+```
+</div>
+
+<div data-plot-id="mean_duration_by_pickup_borough"
+     data-tags="duration,borough,sampling,pickup,distribution,taxi">
+```{r}
+# Trips with pickup in the Bronx, EWR, Queens have various average trip duration from 0 to 80 minutes
+# Trips with pickup in Brooklyn, Staten Island, and Manhattan have narrower average duration between 10 and 50 minutes
+full_results %>% ggplot(aes(mean_duration,fill=PU_Borough)) + geom_histogram(col="black")+ facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Trip Distances by Borough", x="Mean Trip Distance", y="Count")
+```
+</div>
+
+<div data-plot-id="mean_duration_vs_tip_by_pickup_borough"
+     data-tags="duration,borough,sampling,pickup,scatter,taxi">
+```{r}
+# Tip values are tightly clustered for each pickup and drop off pair
+full_results %>% ggplot(aes(mean_duration,mean_tip)) + geom_point(aes(col=DO_Borough)) + geom_smooth(method="lm") +
+  facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Trip Duration by Pickup Borough", x="Mean Trip Duration", y="Mean Tip Amounts",
+       color = "Drop Off Borough")
+```
+</div>
+
+<div data-plot-id="mean_distance_vs_tip_by_pickup_borough"
+     data-tags="distance,borough,sampling,pickup,scatter,taxi">
+```{r}
+# Longer trip distances have an association with higher tips, with the exception of a few unusual cases with a pickup in EWR and dropoff in the Bronx had unusually long trip distances
+full_results %>% ggplot(aes(mean_distance,mean_tip)) + geom_point(aes(col=DO_Borough)) + geom_smooth(method="lm") +
+  facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Trip Distances by Pickup Borough", x="Mean Trip Distance", y="Mean Tip Amounts",
+       color = "Drop Off Borough")
+```
+</div>
+
+<div data-plot-id="mean_fare_vs_tip_by_pickup_borough"
+     data-tags="fare,borough,sampling,pickup,scatter,taxi">
+```{r}
+# Average fares have a strong association with higher tip amounts, regardless of pickup and drop off combinations
+full_results %>% ggplot(aes(mean_fare,mean_tip)) + geom_point(aes(col=DO_Borough)) + geom_smooth(method="lm") +
+  facet_wrap(~PU_Borough)+
+  labs(title = "Sampling Distribution of Mean Fares by Pickup Borough", x="Mean Fare", y="Mean Tip Amounts",
+       color = "Drop Off Borough")
+```
+</div>
+
+<div data-plot-id="tip_amount_vs_rate_code"
+     data-tags="fare,borough,sampling,pickup,scatter,taxi">
+```{r}
+# Standard rate code has the lowest average tip amount while Nassau/Westchester, Negotiated, and Newark rate codes have the highest average tip amounts
+taxi_sample %>% ggplot(aes(Ratecode_name,tip_amount,fill = Ratecode_name)) + geom_boxplot() + 
+  labs(title = "Tip Amount vs. Rate Code", x="Rate Code", y="Tip Amount", fill= "Rate Code")
 ```
 </div>
