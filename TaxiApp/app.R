@@ -1,4 +1,3 @@
-# app.R
 library(shiny)
 library(xml2)
 library(dplyr)
@@ -6,31 +5,25 @@ library(purrr)
 library(stringr)
 library(stringdist)
 library(htmltools)
-library(httr)
-library(jsonlite)
 library(glue)
 source("model.R")
+
 model_obj <- readRDS("tip_model.rds")
 
 # ==== CONFIG ====
-HTML_PATH <- "Yellow-Taxi-EDA.html"   # your HTML file
-HF_MODEL  <- "mistralai/Mistral-7B-Instruct-v0.2"  # change if you like
+HTML_PATH <- "RAG-File.html"
 
 # ==== RAG INDEX BUILDING ====
 build_rag_index <- function(html_path) {
   doc <- read_html(html_path)
   
-  divs <- xml_find_all(doc, "//div[@id]")
+  divs <- xml_find_all(doc, "//div[@data-plot-id]")
   
   tibble(
     id   = xml_attr(divs, "data-plot-id"),
     tags = xml_attr(divs, "data-tags"),
     type = "chunk",
-    text = map_chr(divs, ~ {
-      # Use visible text inside the div as semantic content
-      str_squish(xml_text(.x))
-    }),
-    #html = map_chr(divs, ~ as.character(as.tags(.x))) this was causing error
+    text = map_chr(divs, ~ str_squish(xml_text(.x))),
     html = map_chr(divs, ~ as.character(.x))
   ) %>%
     mutate(
@@ -53,53 +46,37 @@ retrieve_top_chunk <- function(index, query, k = 1) {
 
 rag_index <- build_rag_index(HTML_PATH)
 
-# ==== HUGGING FACE LLM CALL ====
-
-call_hf_llm <- function(question, context, model = HF_MODEL) {
-  token <- Sys.getenv("HF_API_TOKEN")
-  if (token == "") {
-    return("HF_API_TOKEN not set. Please set Sys.setenv(HF_API_TOKEN = '...').")
+# ==== LOCAL ANSWER FROM CONTEXT (NO LLM) ====
+answer_from_context <- function(question, context_text) {
+  if (is.null(context_text) || context_text == "") {
+    return("No relevant content found in the HTML index.")
   }
   
-  url <- glue("https://api-inference.huggingface.co/models/{model}")
+  sentences <- unlist(strsplit(context_text, "(?<=[.!?])\\s+", perl = TRUE))
+  sentences <- str_squish(sentences)
+  sentences <- sentences[nchar(sentences) > 0]
   
-  prompt <- glue(
-    "You are an analyst answering questions based only on the provided context.\n\n",
-    "Question:\n{question}\n\n",
-    "Context (HTML-derived text):\n{context}\n\n",
-    "Answer in 3–6 concise sentences, focusing on the key insight."
-  )
+  if (length(sentences) == 0) return(context_text)
   
-  body <- list(
-    inputs = prompt,
-    parameters = list(
-      max_new_tokens = 256,
-      temperature = 0.2
-    )
-  )
+  q_words <- str_to_lower(str_split(question, "\\W+", simplify = TRUE))
+  q_words <- q_words[q_words != ""]
   
-  res <- POST(
-    url,
-    add_headers(Authorization = paste("Bearer", token)),
-    body = toJSON(body, auto_unbox = TRUE),
-    encode = "raw"
-  )
-  
-  if (http_error(res)) {
-    return(paste("Error from Hugging Face API:", status_code(res)))
+  score_sentence <- function(s) {
+    s_words <- str_to_lower(str_split(s, "\\W+", simplify = TRUE))
+    s_words <- s_words[s_words != ""]
+    length(intersect(q_words, s_words))
   }
   
-  txt <- content(res, as = "text", encoding = "UTF-8")
-  parsed <- fromJSON(txt)
+  scores <- vapply(sentences, score_sentence, numeric(1))
   
-  # Handle both list-of-generations and plain text formats
-  if (is.list(parsed) && !is.null(parsed[[1]]$generated_text)) {
-    return(parsed[[1]]$generated_text)
-  } else if (is.character(parsed)) {
-    return(parsed)
+  if (all(scores == 0)) {
+    best_sentences <- head(sentences, 3)
   } else {
-    return("Unexpected response format from Hugging Face API.")
+    ord <- order(scores, decreasing = TRUE)
+    best_sentences <- sentences[head(ord, 3)]
   }
+  
+  paste(best_sentences, collapse = " ")
 }
 
 # ==== SHINY APP ====
@@ -145,10 +122,10 @@ ui <- navbarPage(
           helpText("Voice input fills the text box if your browser supports speech recognition.")
         ),
         mainPanel(
-          h4("LLM interpretation"),
+          h4("RAG Interpretation (Local Heuristic — No LLM)"),
           verbatimTextOutput("answer_text"),
           tags$hr(),
-          h4("Relevant HTML chunk"),
+          h4("Relevant HTML Chunk"),
           uiOutput("answer_html")
         )
       )
@@ -160,7 +137,6 @@ ui <- navbarPage(
     fluidPage(
       sidebarLayout(
         sidebarPanel(
-          #numericInput("trip_distance", "Trip Distance", value = 2, min = 0),
           numericInput("trip_duration_mins", "Trip Duration (mins)", value = 15, min = 1),
           numericInput("fare_amount", "Fare Amount ($)", value = 15, min = 0.01),
           selectInput(
@@ -176,7 +152,6 @@ ui <- navbarPage(
           verbatimTextOutput("predicted_tip")
         )
       )
-      
     )
   )
 )
@@ -196,17 +171,14 @@ server <- function(input, output, session) {
     retrieve_top_chunk(rag_index, input$query, k = 1)
   })
   
-  llm_answer <- reactive({
+  output$answer_text <- renderText({
     res <- rag_result()
     if (is.null(res) || nrow(res) == 0) {
       return("No relevant content found in the HTML index.")
     }
+    
     context_text <- res$text[1]
-    call_hf_llm(input$query, context_text)
-  })
-  
-  output$answer_text <- renderText({
-    llm_answer()
+    answer_from_context(input$query, context_text)
   })
   
   output$answer_html <- renderUI({
