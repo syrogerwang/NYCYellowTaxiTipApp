@@ -1,0 +1,16 @@
+default:
+  base_url: "https://raw.githubusercontent.com/zjjennings/6303_Final/main/"
+  files:
+    - "yellow_tripdata_2025-01.parquet"
+    - "yellow_tripdata_2025-02.parquet"
+    - "yellow_tripdata_2025-03.parquet"
+    - "yellow_tripdata_2025-04.parquet"
+    - "yellow_tripdata_2025-05.parquet"
+    - "yellow_tripdata_2025-06.parquet"
+    - "yellow_tripdata_2025-07.parquet"
+    - "yellow_tripdata_2025-08.parquet"
+    - "yellow_tripdata_2025-09.parquet"
+    - "yellow_tripdata_2025-10.parquet"
+    - "yellow_tripdata_2025-11.parquet"
+    - "yellow_tripdata_2025-12.parquet"
+  zone_lookup_file: "taxi_zone_lookup.csv"
