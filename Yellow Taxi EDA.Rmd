@@ -18,11 +18,11 @@ library(tidyr)
 
 #files <- choose.files()
 
-files <- list.files(choose.files(), pattern = "\\.parquet$", full.names = TRUE)
+files <- list.files("C:/Users/sheng/Downloads", pattern = "\\.parquet$", full.names = TRUE)
 
 basename(files) #making sure the correct files are grabbed.
 
-
+set.seed(123)
 #sampling 5% from each month
 taxi <- bind_rows(
   lapply(seq_along(files), function(i) {
@@ -31,10 +31,9 @@ taxi <- bind_rows(
     # extract month
     month_val <- as.integer(sub(".*-(\\d{2})\\.parquet", "\\1", basename(f)))
     
-    set.seed(123)
     
     read_parquet(f) %>%
-      sample_frac(0.05, replace = FALSE) %>%
+      sample_frac(0.004, replace = FALSE) %>%
       mutate(month = month_val)
   })
 )
@@ -89,7 +88,7 @@ head(taxi)
 ```
 
 # Checking missing values
-## A few variables have a large number of missing entries (580,571 NAs out of 2436130 records), including:passenger_count, RatecodeID, store_and_fwd_flag, congestion_surcharge, Airport_fee
+## A few variables have a large number of missing entries (46261 NAs out of 194890 records), including:passenger_count, RatecodeID, store_and_fwd_flag, congestion_surcharge, Airport_fee
 
 ```{r}
 #Checking missing values
@@ -99,7 +98,7 @@ sapply(taxi, function(x) sum(is.na(x)))
 # Section: Missing Passenger Count Analysis by Vendor
 
 ## Question: How does missing passenger count data vary across taxi vendors
-## Myle Technologies has 100% missing data, which suggests a systematic issue rather than random missingness. In contrast, Creative Mobile Technologies (16.4%) and Curb Mobility (26%) have moderate levels of missing data, while Helix has no missing values at all.
+## Myle Technologies has 100% missing data, which suggests a systematic issue rather than random missingness. In contrast, Creative Mobile Technologies (16.4%) and Curb Mobility (25.8%) have moderate levels of missing data, while Helix has no missing values at all.
 
 ## Question: How are passenger counts distributed across different vendors?
 ## Most trips across all vendors have a passenger count of 1, with higher counts (6–9) being rare outliers. Curb Mobility shows slightly more variability, but overall patterns are similar across vendors.
@@ -162,7 +161,7 @@ head(taxi)
 # Section: Impact of Missing Passenger Count on Tip Analysis
 
 ## Question: Does missing passenger count data affect tip amounts?
-## After removing trips with missing passenger counts, the mean tip rose from 2.84 to 3.63 and the median from 2.00 to 2.95. This suggests missing values are associated with lower tips. I also observed extreme tip values, indicating outliers or data issues that may need cleaning.
+## After removing trips with missing passenger counts, the mean and median are very close about 2.84 and 2.01.
 
 ```{r}
 # Whole dataset
@@ -209,7 +208,7 @@ taxi <- taxi %>%
 
 ## Question: Are there inconsistencies between fare and total amount, and how should I clean them?
 ## I checked for inconsistencies by identifying records with non-positive fares or totals, which are likely invalid. I removed observations where fare_amount ≤ 0 to ensure only meaningful trips remain.
-##I then calculated tip percentage using fare_amount, since total_amount includes tips and extra fees and could distort results. After cleaning, the median tip percentage is ~20% and the mean ~18.8%, though some extreme outliers remain.
+##I then calculated tip percentage using fare_amount, since total_amount includes tips and extra fees and could distort results. After cleaning, the median tip percentage is ~21% and the mean ~17.6%, though some extreme outliers remain.
 ##Overall, using fare_amount provides a cleaner, more consistent basis for analysis and reduces the impact of irregularities in total_amount.
 
 ```{r}
@@ -235,7 +234,7 @@ head(taxi)
 # Section: Tipping Behavior by Payment Type
 
 ## Question: How does average tip percentage vary by payment type, and which payment methods have the highest and lowest tipping rates?
-## Answer: Tip percentages vary by payment type: credit cards have the highest (~27.2%), flex fare is low (~1.7%), and cash appears near zero due to unrecorded tips. “Dispute” and “No charge” are excluded as they don’t reflect real tipping behavior, leaving credit cards with clearly higher recorded tips than flex fare.
+## Answer: Tip percentages vary by payment type: credit cards have the highest (25.4%), flex fare is low (1.7%), and cash appears near zero due to unrecorded tips. “Dispute” and “No charge” are excluded as they don’t reflect real tipping behavior, leaving credit cards with clearly higher recorded tips than flex fare.
 
 ```{r}
 library(ggplot2)
@@ -293,7 +292,7 @@ taxi %>%
 
 ## Question: How does the median tip percentage vary across taxi vendors, and which vendor shows the highest tipping behavior?
 
-## Anaswer: Median tip percentages differ across vendors. Helix has the highest median tip (~28.0%), followed by Creative Mobile Technologies (~24.2%) and Curb Mobility (~23.4%). Myle Technologies shows a median tip of 0%, which likely reflects missing or unrecorded tip data rather than actual absence of tipping. Overall, Helix demonstrates the strongest tipping behavior among the vendors.
+## Anaswer: Median tip percentages differ across vendors. Helix has the highest median tip (28.2%), followed by Creative Mobile Technologies (24.1%) and Curb Mobility (23.4%). Myle Technologies shows a median tip of 0%, which likely reflects missing or unrecorded tip data rather than actual absence of tipping. Overall, Helix demonstrates the strongest tipping behavior among the vendors.
 
 ```{r}
 #Vendor
@@ -320,7 +319,7 @@ taxi %>%
 
 ## Question: How do median tip percentages and fare amounts vary with passenger count?
 
-## Answer: Median tip percentages remain relatively stable for smaller groups (1–6 passengers), generally ranging from about 23% to 27%, with a slight peak around 5–6 passengers (~27%). However, tipping drops noticeably for larger groups (7–9 passengers), with a sharp decline at 7 passengers (~10.2%) and lower values for 8–9 passengers.
+## Answer: Median tip percentages remain relatively stable for smaller groups (1–6 passengers), generally ranging from about 23% to 28%, with a slight peak around 5–6 passengers (~27%). However, tipping drops noticeably for larger groups (8 passengers 21.1% median tip –9 passengers 12.8% median tip).
 ## Fare amounts show a different pattern: most rides with 1–4 passengers have a wide distribution with many outliers, indicating variability in trip distance and cost. As passenger count increases, fare variability decreases and fares become more concentrated, though generally higher for larger groups. Overall, while fares tend to rise and stabilize with more passengers, tipping behavior weakens for larger group sizes.
 
 
@@ -403,7 +402,7 @@ taxi %>%
 
 # Section: Impact of Fare Components on Tipping Behavior
 ## Question: How do different fare components (fare amount, extras, taxes, and surcharges) influence median tip percentages?
-## Answer: Tipping decreases as fare amount increases (30.1% to 15.2%) and similarly declines with total amount (27.8% to 22.1%). In contrast, higher extras are linked to higher tips (12.3% to 27.7%). Tolls and airport fees have minimal impact. Some fees (MTA tax, improvement, congestion surcharge) lack variation, limiting insights. Higher CBD congestion fees also show lower tipping (23.6% to 14.8%).
+## Answer: Tipping decreases as fare amount increases (30.1% to 15.5%) and similarly declines with total amount (27.8% to 22.1%). In contrast, higher extras are linked to higher tips (12.4% to 27.7%). Tolls and airport fees have minimal impact. Some fees (MTA tax, improvement, congestion surcharge,  CBD congestion) lack variation, limiting insights.
 
 ```{r}
 fee_columns <- c("fare_amount", "extra", "mta_tax", "tolls_amount",
@@ -500,7 +499,7 @@ taxi <- taxi %>%
 
 ## Question: Does the presence of valid, invalid (false), or no airport fee affect median tip percentages?
 
-## Answer: Median tip percentages are fairly similar across all airport fee categories, with only minor differences. Trips with a false airport charge show slightly higher median tips (25.9%), compared to no charge (23.8%) and valid charges (23.3%). However, the differences are small, suggesting that airport fees (valid and incorrectly applied) do not meaningfully influence tipping behavior.
+## Answer: Median tip percentages are fairly similar across all airport fee categories, with only minor differences. Trips with a false airport charge show slightly higher median tips (26%), compared to no charge (23.8%) and valid charges (23.3%). However, the differences are small, suggesting that airport fees (valid and incorrectly applied) do not meaningfully influence tipping behavior.
 
 ```{r}
 taxi %>%
@@ -529,7 +528,7 @@ taxi %>%
 
 ## Question: How does median tip percentage vary across different pickup boroughs?
 
-## Answer: Median tip percentages vary notably by pickup borough. Manhattan (24.8%) and Queens (21.1%) show the highest tipping rates among major boroughs, indicating stronger tipping behavior in these areas. EWR (12.6%) has noticeably lower median tips. Meanwhile, Bronx, Brooklyn, and Staten Island show 0%, which likely reflects missing or unrecorded tip data rather than true absence of tipping. The “Unknown” category (25.4%) and "N/A" (7.3%) but may not be reliable due to unclear location data. Overall, tipping is strongest in high-traffic, central areas like Manhattan and Queens.
+## Answer: Median tip percentages vary notably by pickup borough. Manhattan (24.8%) and Queens (21.1%) show the highest tipping rates among major boroughs, indicating stronger tipping behavior in these areas. EWR (16.7%) has noticeably lower median tips. Meanwhile, Bronx, Brooklyn, and Staten Island show 0%, which likely reflects missing or unrecorded tip data rather than true absence of tipping.
 
 
 ```{r}
@@ -561,8 +560,7 @@ taxi %>%
 
 ## Question: How does median tip percentage vary across different dropoff boroughs?
 
-## Answer: Median tip percentages vary across dropoff boroughs in a pattern similar to pickup locations. Manhattan (24.8%) and EWR (23.1%) show relatively high tipping rates, followed by Queens (13.2%) with moderate levels. Staten Island (2.2%) is much lower, while Bronx and Brooklyn show 0%, likely due to missing or unrecorded tip data rather than actual behavior. The “Unknown” category (25.6%) and "N/A" (16.1%) andmay not be reliable due to unclear location data. Overall, higher tipping is concentrated in major transit and central areas like Manhattan and airport routes.
-
+## Answer: Median tip percentages vary across dropoff boroughs in a pattern similar to pickup locations. Manhattan (24.8%) and EWR (22.5%) show relatively high tipping rates, followed by Queens (11.8%) with moderate levels. Bronx and Brooklyn, Staten Island show 0%, likely due to missing or unrecorded tip data rather than actual behavior. 
 
 ```{r}
 taxi %>%
@@ -606,11 +604,9 @@ taxi %>%
 ## Question: How does median tip percentage vary across dropoff boroughs within each pickup borough?
 
 ## Answer: Several patterns stand out: 
-### For Manhattan pickups, median tip percentages are generally highest for dropoffs to Manhattan (25.2%), EWR (23.5%), and Queens (23.1%), while dropoffs to Bronx (0%), Staten Island (6.7%) are much lower.
-### For Queens pickups, tipping is also relatively strong for dropoffs to Manhattan (23.3%), and EWR (22.5%), but lower for Staten Island and near zero for some local categories.
-### For EWR pickups, tips increase from EWR (11.5%) to Unknown (20.2%) to Manhattan (23.6%), suggesting airport-origin trips to central destinations tend to have stronger tipping.
-### For Unknown pickups, the highest tips appear for dropoffs to Manhattan, Staten Island, and Unknown (around 25%–26%), while EWR is much lower.
-### For Brooklyn, Bronx, and Staten Island pickups, many categories show 0%, which likely reflects very small sample sizes, missing values, or unrecorded tips, so these should be interpreted cautiously.
+### For Manhattan pickups, median tip percentages are generally highest for dropoffs to Manhattan (25.1%), EWR (23.4%), Staten Island (21.6%), and Queens (22.8%), while dropoffs to Bronx (0%) is much lower.
+### For Queens pickups, tipping is also relatively strong for dropoffs to Manhattan (23.3%),  Brooklyn (19.6%), but lower for Staten Island, and EWR (8.9%) and near zero for some local categories.
+### For EWR pickups, tips increase from EWR (16.7%).
 
 ## Overall, the strongest and most consistent tipping appears on trips involving Manhattan, Queens, and EWR, especially when trips connect major commercial or airport areas. In contrast, many outer-borough pickup/dropoff combinations appear sparse and may not be reliable enough for strong conclusions.
 
@@ -662,7 +658,7 @@ for (p in unique(taxi$pickup_borough)) {
 
 ## Question: How do median tip percentages and median fare amounts vary across different rate codes?
 
-## Answer: Median tip percentages vary moderately across rate codes, while median fares differ substantially. Standard trips have the highest median tip percentage (27.0%) despite also having the lowest median fare ($12.80), suggesting riders tip a larger percentage on regular lower-cost trips. JFK and Newark trips show slightly lower median tip percentages (23.1% and 23.2%) but much higher median fares ($70.00 and $85.30). Negotiated (median fare $70) and Nassau/Westchester trips have the lowest nonzero median tip percentages (20.2% and 20.4%), even though Nassau/Westchester has the highest median fare ($104.50). The Unknown rate code shows a 0% median tip and a relatively low fare ($19.73), which likely reflects missing or unreliable data. Overall, higher-fare rate codes tend to have lower tip percentages, reinforcing the earlier pattern that passengers tip proportionally less on more expensive trips.
+## Answer: Median tip percentages vary moderately across rate codes, while median fares differ substantially. Standard trips have the highest median tip percentage (27.0%) despite also having the lowest median fare ($12.80), suggesting riders tip a larger percentage on regular lower-cost trips. JFK and Newark trips show slightly lower median tip percentages (23.1% and 22.7%) but much higher median fares ($70.00 and $86). Negotiated (median fare $70) and Nassau/Westchester trips have the lowest nonzero median tip percentages (20.2% and 20.2%), even though Nassau/Westchester has the highest median fare ($98.90). The Unknown rate code shows a 0% median tip and a relatively low fare ($19.64), which likely reflects missing or unreliable data. Overall, higher-fare rate codes tend to have lower tip percentages, reinforcing the earlier pattern that passengers tip proportionally less on more expensive trips.
 
 
 ```{r}
@@ -761,13 +757,14 @@ taxi <- taxi %>%
 
 ## For the major pickup boroughs:
 
-### Manhattan pickups show consistently strong tipping across most times of day, especially for dropoffs to Manhattan, Unknown, Queens, and EWR, which are often in the 22%–27% range. Some routes such as Brooklyn are also strong in the afternoon and evening, while Bronx, Staten Island, and N/A tend to be lower or inconsistent.
-### Queens pickups also show stable, relatively high tipping across Brooklyn, EWR, Manhattan, and Unknown dropoffs, usually around 20%–24% across morning, afternoon, evening, and night. This suggests Queens-origin trips have more consistent tipping behavior than many other boroughs.
-### Unknown pickups display wide variation by destination and time, but several combinations still show high tipping, especially toward Manhattan, Queens, Staten Island, and Unknown itself, often above 20%.
-### EWR pickups mainly show stronger tipping on trips going to Manhattan, with values roughly between 13% and 24% depending on time of day, while other destinations are sparse or zero.
-### Brooklyn, Bronx, and Staten Island pickups remain much sparser. Their patterns are dominated by zeros or isolated nonzero routes, which suggests small sample sizes or missing observations rather than stable tipping behavior.
+###Tips are lower in the morning and afternoon (about 10–26%) but rise in the evening and night, often reaching 25–30%.
 
-## Overall, the clearest pattern is that routes involving Manhattan, Queens, and EWR consistently exhibit the highest tipping behavior, and this trend remains stable across different times of day.
+###From Manhattan pickups, tips are highest on longer trips, such as to Staten Island at night (~27.7%) and to unknown destinations (~25–26%), while trips to the Bronx are near 0%.
+
+###From Queens, tips peak for unknown destinations, especially in the evening (~30.9%) and night (~26.8%), while local Queens dropoffs are much lower (around 0–7%).
+
+###For unknown pickup locations, tips are consistently high across all times, generally around 20–28%, with peaks in the evening (~28.5%) and night (~27.4%).
+
 
 
 ```{r}
@@ -813,7 +810,7 @@ for (borough in unique(taxi$pickup_borough)) {
 # Section: Tipping Behavior by Weekday
 
 ## Question: How does median tip percentage vary across different days of the week?
-## Answer: Median tip percentages are relatively consistent throughout the week, generally ranging between 22% and 25%. Weekdays (Monday–Thursday) show slightly higher tipping levels (around 24%–24.6%), with Tuesday being the highest (24.6%). Tipping gradually declines toward the weekend, with Friday (23.2%), Saturday (22.2%), and Sunday (22.3%) showing slightly lower values. Overall, tipping behavior is stable across days, with only a modest decrease on weekends.
+## Answer: Median tip percentages are fairly consistent throughout the week, staying between 22.1% and 24.6%. Tips are highest on Tuesday (24.6%), followed closely by Monday and Wednesday (both 24.3%), and slightly decline toward the weekend, with the lowest on Saturday (22.1%) and Sunday (22.4%).
 
 
 ```{r}
@@ -840,7 +837,7 @@ taxi %>%
 # Section: Tipping Behavior by Month
 
 ## Question: How does median tip percentage vary across different months of the year?
-## Answer: Median tip percentages remain relatively stable throughout the year, generally ranging between 21% and 25%. Tipping is slightly higher in the early months, with January (25.4%) and April (24.8%) among the highest. Mid-year months (May–September) show a small dip, mostly around 23%, before slightly increasing again in October (24.0%) and November (24.1%). December (21.4%) has the lowest median tip percentage. Overall, tipping behavior shows minor seasonal variation but remains fairly consistent across months.
+## Answer: Median tip percentages are relatively stable throughout the year, mostly ranging between 23% and 25%. Tips are highest in January (25.4%) and remain strong through April (24.7%), then dip slightly in late spring and summer to around 23.1–23.4%. They rise again in the fall, reaching 24.1% in November, before dropping to the lowest point in December (21.2%).
 
 ```{r}
 taxi %>% 
@@ -868,7 +865,7 @@ taxi %>%
 # Section: Tipping Behavior by Time of Day
 
 ## Question: How does median tip percentage vary across different times of the day?
-## Answer: Median tip percentages vary more noticeably by time of day compared to weekday or month. Morning (24.5%) and afternoon (24.6%) have the highest tipping levels, indicating stronger tipping behavior during earlier parts of the day. Tipping drops significantly in the evening (18.7%), before slightly increasing again at night (20.1%). Overall, the median tip is more during the day and less during later hours, with the lowest median tipping occurring in the evening.
+## Answer: Median tips are highest during the afternoon (24.6%) and morning (24.5%), then drop significantly in the evening (18.4%), before slightly increasing again at night (20.0%).
 
 ```{r}
 taxi %>%
@@ -899,7 +896,7 @@ taxi %>%
 
 ## Question : How does average tip percentage vary by payment type, and which payment methods provide meaningful insights into tipping behavior?
 
-## Answer: The median tipstays steady in the morning/afternoon (24–26%) across all days, but drops in the evening (16–22%), especially on weekends. Night median tips are slightly higher than evening but still lower than daytime (15–22%). Overall, time of day matters more than weekday, with highest median tipping during the day and lower median tip at night, particularly on weekends.
+## Answer: Median tips are highest and most stable during the morning (about 23.4%–25.1%) and afternoon (about 22.7%–25.8%) across all weekdays.In the evening, tips drop noticeably, ranging from about 14.1% (Saturday) to 22.5% (Tuesday), with the lowest values occurring on weekends.At night, tips are slightly higher than evening but still lower than daytime, ranging from about 15.2% (Saturday) to 22.4% (Tuesday). Overall, tipping is strongest midweek and during the day, while weekends—especially Saturday evenings and nights—see the lowest tip percentages.
 
 ```{r}
 taxi %>%
@@ -941,7 +938,7 @@ taxi %>% filter(trip_duration_mins > 300)%>% arrange(trip_duration_mins)
 
 ## Question: How does median tip percentage vary across different trip duration ranges?
 
-## Answer: Median tip percentages are highest for shorter trips and generally decline as trip duration increases. Trips lasting 0–5 minutes have the highest median tip percentage (34.5%), followed by 5–10 minutes (29.3%) and 10 minutes or less overall, which remain relatively high. Tipping then decreases for longer trips, falling to around 23.5% for 10–20 minutes, 18.0% for 20–30 minutes, 18.5% for 30–60 minutes, and reaching the lowest level for trips over 60 minutes (14.3%). Overall, passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+## Answer: Median tip percentages are highest for short trips, peaking at 34.5% for 0–5 minutes and 29.3% for 5–10 minutes. Tips then decline as trip duration increases, dropping to 23.5% (10–20 min) and 17.9% (20–30 min). Although there is a slight increase for 30–60 minutes (18.9%), the longest trips (60+ minutes) have the lowest tips at 14.3%, showing that shorter trips tend to receive higher tip percentages.
 
 
 ```{r}
@@ -985,7 +982,7 @@ taxi %>%
 
 ## Question: How does median fare amount vary across different trip duration ranges?
 
-## Answer: Median fare amount increases steadily as trip duration gets longer. Very short trips have the lowest fares, with 0–5 minutes ($5.80) and 5–10 minutes ($9.30). Fares rise for medium-length trips, reaching about $14.90 for 10–20 minutes and $24.70 for 20–30 minutes. Longer trips show much higher median fares, increasing to $43.50 for 30–60 minutes and peaking at $70.00 for trips over 60 minutes. Overall, longer trip duration is strongly associated with higher fare amounts.
+## Answer: Median fares increase steadily with trip duration, rising from $5.80 (0–5 min) and $9.30 (5–10 min) to $14.90 (10–20 min) and $24.70 (20–30 min). Longer trips see much higher fares, reaching $43.50 (30–60 min) and peaking at $70.00 (60+ min), showing a strong positive relationship between trip length and fare.
 
 ```{r}
 taxi %>%
@@ -1029,7 +1026,7 @@ taxi %>%
 
 ## Question: How does median tip percentage vary across different trip distance ranges?
 
-## Answer: Median tip percentages are highest for short-distance trips and generally decline as distance increases. Trips between 0–1 mile have the highest median tip percentage (31.1%), followed by 1–2 miles (26.7%). Tipping then drops for medium-distance trips, reaching 19.8% for 2–5 miles and 11.2% for 5–10 miles. For longer trips, tip percentages recover somewhat but remain lower than very short trips, at about 20.8% for 10–20 miles and 20.5% for 20+ miles. The ≤0 distance group shows 0%, which likely reflects invalid or anomalous records rather than meaningful tipping behavior. Overall, passengers tend to tip a higher percentage on shorter trips, with the lowest tipping observed for mid-range trips around 5–10 miles.
+## Answer: Median tip percentages are highest for very short trips, peaking at 31.1% for 0–1 miles and 26.7% for 1–2 miles. Tips then decline with distance, dropping to 19.8% (2–5 miles) and reaching the lowest at 11.3% (5–10 miles). For longer trips, tips recover slightly to around 20.8% (10–20 miles) and 20.5% (20+ miles), but remain below the highest short-distance levels.
 
 
 ```{r}
@@ -1074,7 +1071,7 @@ taxi %>%
 
 ## Question: How does median fare amount vary across different trip distance ranges?
 
-## Answer: Median fare amount generally increases as trip distance increases. Very short trips of 0–1 mile have the lowest median fare ($7.20), followed by 1–2 miles ($11.40) and 2–5 miles ($19.10). Fares rise further for longer distances, reaching about $32.80 for 5–10 miles, $59.70 for 10–20 miles, and $70.00 for 20+ miles. The ≤0 distance group shows a relatively high median fare ($20.00), which likely reflects invalid or anomalous trip records rather than a meaningful pattern. Overall, fare amount increases strongly with trip distance.
+## Answer: Median fares increase as trip distance grows, starting at $7.20 (0–1 miles) and $11.40 (1–2 miles), then rising to $19.10 (2–5 miles) and $33.10 (5–10 miles). Longer trips have much higher fares, reaching $60.40 (10–20 miles) and peaking at $70.00 (20+ miles), showing a strong positive relationship between distance and fare.
 
 ```{r}
 taxi %>%
@@ -1155,7 +1152,10 @@ taxi %>%
 
 ## Question: How does median tip percentage vary by trip distance when broken down by passenger count?
 
-## Answer: For passenger counts 1–6, tipping is highest on short trips (0–1 mile: ~31–33%) and declines with distance (~20–23% for 10+ miles), showing a consistent pattern across group sizes. For larger groups (7–9), data is sparse and inconclusive. Overall, trip distance has a stronger impact on tipping than passenger count.
+## Answer: 
+### Across all passenger counts, tip percentages are highest for short trips and decline as distance increases. For example, with 1 passenger, tips drop from 31.1% (0–1 miles) to 3.7% (5–10 miles) before slightly rising again for longer trips (~18–20%).
+### This pattern is consistent across groups: for 2–6 passengers, short trips (0–1 miles) have the highest tips (~32–34%), while mid-distance trips (5–10 miles) are lower (~23%), and longer trips (10+ miles) stabilize around 21–23%.
+### Overall, regardless of passenger count, shorter trips receive higher tip percentages, while longer trips tend to have lower but more consistent tipping.
 
 ```{r}
 taxi %>%
@@ -1194,10 +1194,12 @@ taxi %>%
   theme_minimal() +
   theme(legend.position = "none")
 ```
+
+
 # Section: Relationship Between Tip Percentage and Trip Duration
 
 ## Question: What is the relationship between tip percentage and trip duration?
-## Answer: The scatter plot with a fitted trend line shows a clear negative relationship between tip percentage and trip duration. As trip duration increases, the tip percentage generally decreases. Short trips exhibit a wide range of tipping behavior, including many higher tip percentages, while longer trips tend to cluster at lower tip percentages with less variability. This confirms earlier findings that passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+## Answer: Both plots show a clear negative relationship between trip duration and tip percentage. Short trips have higher and more variable tips, while longer trips cluster at lower, more consistent tip levels.
 
 ```{r}
 taxi %>%
@@ -1250,7 +1252,7 @@ taxi %>%
 # Section: Relationship Between Tip Percentage and Trip Distance
 
 ## Question: What is the relationship between tip percentage and trip distance?
-## Answer: The scatter plot and trend line show a clear negative relationship between tip percentage and trip distance. As trip distance increases, the tip percentage generally decreases. Short-distance trips display a wide spread of tipping behavior, including many higher tip percentages, while longer-distance trips are more concentrated at lower tip percentages with less variability. This reinforces earlier findings that passengers tend to tip a higher percentage on shorter trips and a lower percentage on longer trips.
+## Answer: Both plots show a negative relationship between trip distance and tip percentage. Short-distance trips have higher and more variable tips, while longer trips have lower, more consistent tip percentages, with the trend steadily decreasing as distance increases.
 
 ```{r}
 taxi %>%
@@ -1303,8 +1305,7 @@ taxi %>%
 # Section: Relationship Between Tip Percentage and Fare Amount
 
 ## Question: What is the relationship between tip percentage and fare amount?
-## Answer: The scatter plot indicates a negative relationship between tip percentage and fare amount. As fare amount increases, the tip percentage tends to decline, as shown by the downward-sloping trend line. Lower fare trips exhibit greater variability and often include higher tip percentages, while higher fare trips are more tightly clustered at lower tip percentages. This suggests that riders are less likely to tip a high percentage on more expensive trips, even though the absolute tip amount may still be larger.
-
+## Answer: There is a negative relationship between (log) fare amount and tip percentage. As fares increase (even on a log scale), tip percentages gradually decrease, with higher variability at lower fares and more consistent, lower tips at higher fares.
 
 ```{r}
 taxi %>%
@@ -1332,7 +1333,7 @@ taxi %>%
 # Section: Predictive Performance of the Tip Percentage Model
 
 ## Question: How well does the linear regression model predict tip percentage withour removing outliers?
-## Answer: The linear regression model shows moderate predictive accuracy. On the test set, it achieves an RMSE of about 0.422 and an MAE of about 0.149. This means the model’s predictions deviate from the actual tip percentage by about 14.9 percentage points on average, with larger errors reflected in the RMSE. Overall, the model captures some of the variation in tipping behavior, but prediction error remains substantial, suggesting that tip percentage is influenced by additional nonlinear or unobserved factors not fully captured by the model.
+## Answer: The linear regression model shows moderate predictive accuracy. On the test set, it achieves an RMSE of about 0.129 and an MAE of about 0.068. This means the model’s predictions deviate from the actual tip percentage by about 6.9 percentage points on average, with larger errors reflected in the RMSE. Overall, the model captures some of the variation in tipping behavior, but prediction error remains substantial, suggesting that tip percentage is influenced by additional nonlinear or unobserved factors not fully captured by the model.
 
 ```{r}
 set.seed(123)
@@ -1372,8 +1373,7 @@ MAE(pred, test$tip_percent_fare_amount)
 ## Section: Model Performance After Data Cleaning
 
 ## Question: How does the linear regression model perform after cleaning the data?
-## Answer: After removing outliers and restricting tip percentages to a reasonable range, the model’s performance improves substantially. The test set results show an RMSE of about 0.098 and an MAE of about 0.067, indicating much smaller prediction errors compared to the earlier model.
-## Additionally, the training set metrics (RMSE ≈ 0.098, MAE ≈ 0.067) are very close to the test set results, suggesting no significant overfitting and good generalization. Overall, data cleaning greatly enhances model stability and predictive accuracy, highlighting the importance of handling extreme values in tipping behavior analysis.
+## Answer: After removing outliers and restricting tip percentages to a reasonable range, the model’s performance improves substantially. The test set results show an RMSE of about 0.0977 and an MAE of about 0.0669, indicating much smaller prediction errors compared to the earlier model.
 
 
 ```{r}
@@ -1437,16 +1437,20 @@ MAE(pred_train, train_clean$tip_percent_fare_amount)
 ```{r}
 model_improved <- lm(
   tip_percent_fare_amount ~
-    log1p(trip_distance) +
+    #log1p(trip_distance) +
     log1p(trip_duration_mins) + I(log1p(trip_duration_mins)^2) +
-    log1p(fare_amount) +
-    payment_type_name +
-    pickup_time_of_day * weekday +
-    pickup_borough +
-    dropoff_borough +
+    #pickup_time_of_day + weekday +
+    #pickup_borough +
+    #dropoff_borough, 
     Ratecode_name,
   data = train_clean
 )
+    #pickup_time_of_day + weekday +
+    #pickup_borough +
+    #dropoff_borough, 
+    #Ratecode_name,
+#log1p(fare_amount) +
+    #payment_type_name +
 
 pred_clean_improved <- predict(model_improved, newdata = test_clean)
 
