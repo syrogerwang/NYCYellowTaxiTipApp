@@ -9,9 +9,11 @@ library(htmltools)
 library(httr)
 library(jsonlite)
 library(glue)
+source("model.R")
+model_obj <- readRDS("tip_model.rds")
 
 # ==== CONFIG ====
-HTML_PATH <- "report.html"   # your HTML file
+HTML_PATH <- "Yellow-Taxi-EDA.html"   # your HTML file
 HF_MODEL  <- "mistralai/Mistral-7B-Instruct-v0.2"  # change if you like
 
 # ==== RAG INDEX BUILDING ====
@@ -28,7 +30,8 @@ build_rag_index <- function(html_path) {
       # Use visible text inside the div as semantic content
       str_squish(xml_text(.x))
     }),
-    html = map_chr(divs, ~ as.character(as.tags(.x)))
+    #html = map_chr(divs, ~ as.character(as.tags(.x))) this was causing error
+    html = map_chr(divs, ~ as.character(.x))
   ) %>%
     mutate(
       tags = if_else(is.na(tags), "", tags),
@@ -101,49 +104,79 @@ call_hf_llm <- function(question, context, model = HF_MODEL) {
 
 # ==== SHINY APP ====
 
-ui <- fluidPage(
-  tags$head(
-    tags$script(HTML("
-      Shiny.addCustomMessageHandler('start_voice', function(message) {
-        try {
-          var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-          if (!SpeechRecognition) {
-            alert('Speech recognition not supported in this browser.');
-            return;
-          }
-          var recognition = new SpeechRecognition();
-          recognition.lang = 'en-US';
-          recognition.interimResults = false;
-          recognition.maxAlternatives = 1;
-          recognition.onresult = function(event) {
-            var transcript = event.results[0][0].transcript;
-            Shiny.setInputValue('voice_text', transcript, {priority: 'event'});
-          };
-          recognition.start();
-        } catch (e) {
-          console.log(e);
-          alert('Error starting speech recognition.');
-        }
-      });
-    "))
+ui <- navbarPage(
+  "Yellow Taxi App",
+  
+  tabPanel(
+    "RAG Q&A",
+    fluidPage(
+      tags$head(
+        tags$script(HTML("
+          Shiny.addCustomMessageHandler('start_voice', function(message) {
+            try {
+              var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+              if (!SpeechRecognition) {
+                alert('Speech recognition not supported in this browser.');
+                return;
+              }
+              var recognition = new SpeechRecognition();
+              recognition.lang = 'en-US';
+              recognition.interimResults = false;
+              recognition.maxAlternatives = 1;
+              recognition.onresult = function(event) {
+                var transcript = event.results[0][0].transcript;
+                Shiny.setInputValue('voice_text', transcript, {priority: 'event'});
+              };
+              recognition.start();
+            } catch (e) {
+              console.log(e);
+              alert('Error starting speech recognition.');
+            }
+          });
+        "))
+      ),
+      
+      sidebarLayout(
+        sidebarPanel(
+          textInput("query", "Ask a question:", ""),
+          actionButton("ask", "Answer"),
+          br(), br(),
+          actionButton("voice", "🎤 Speak question"),
+          helpText("Voice input fills the text box if your browser supports speech recognition.")
+        ),
+        mainPanel(
+          h4("LLM interpretation"),
+          verbatimTextOutput("answer_text"),
+          tags$hr(),
+          h4("Relevant HTML chunk"),
+          uiOutput("answer_html")
+        )
+      )
+    )
   ),
   
-  titlePanel("RAG Q&A over HTML (with LLM)"),
-  
-  sidebarLayout(
-    sidebarPanel(
-      textInput("query", "Ask a question:", ""),
-      actionButton("ask", "Answer"),
-      br(), br(),
-      actionButton("voice", "🎤 Speak question"),
-      helpText("Voice input fills the text box if your browser supports speech recognition.")
-    ),
-    mainPanel(
-      h4("LLM interpretation"),
-      verbatimTextOutput("answer_text"),
-      tags$hr(),
-      h4("Relevant HTML chunk (table/image/text)"),
-      uiOutput("answer_html")
+  tabPanel(
+    "Tip Prediction",
+    fluidPage(
+      sidebarLayout(
+        sidebarPanel(
+          #numericInput("trip_distance", "Trip Distance", value = 2, min = 0),
+          numericInput("trip_duration_mins", "Trip Duration (mins)", value = 15, min = 1),
+          numericInput("fare_amount", "Fare Amount ($)", value = 15, min = 0.01),
+          selectInput(
+            "Ratecode_name",
+            "Rate Code",
+            choices = model_obj$levels$Ratecode_name,
+            selected = model_obj$levels$Ratecode_name[1]
+          ),
+          actionButton("predict_btn", "Predict Tip")
+        ),
+        mainPanel(
+          h4("Predicted Tip"),
+          verbatimTextOutput("predicted_tip")
+        )
+      )
+      
     )
   )
 )
@@ -182,6 +215,40 @@ server <- function(input, output, session) {
       return(HTML("<em>No content to display.</em>"))
     }
     HTML(res$html[1])
+  })
+  
+  tip_prediction <- eventReactive(input$predict_btn, {
+    fare_val <- suppressWarnings(as.numeric(input$fare_amount))
+    
+    new_data <- data.frame(
+      trip_duration_mins = input$trip_duration_mins,
+      Ratecode_name = input$Ratecode_name,
+      stringsAsFactors = FALSE
+    )
+    
+    pred_pct <- predict_tip_percent(model_obj, new_data)
+    
+    list(
+      tip_percent = pred_pct,
+      tip_amount = if (!is.na(fare_val) && nzchar(input$fare_amount)) pred_pct * fare_val else NA_real_
+    )
+  })
+  
+  output$predicted_tip <- renderText({
+    req(tip_prediction())
+    
+    res <- tip_prediction()
+    pct_text <- paste0("Predicted tip percent: ", round(100 * res$tip_percent, 1), "%")
+    
+    if (is.na(res$tip_amount)) {
+      pct_text
+    } else {
+      paste0(
+        pct_text,
+        "\nPredicted tip amount: $",
+        round(res$tip_amount, 2)
+      )
+    }
   })
 }
 

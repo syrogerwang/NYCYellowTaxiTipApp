@@ -15,3 +15,4 @@ taxi <- prepare_taxi_data(files, borough_zone)
 tip_model <- train_model(taxi)
 
 saveRDS(tip_model, "tip_model.rds")
+
