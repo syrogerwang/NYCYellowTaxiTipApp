@@ -16,9 +16,7 @@ library(arrow)
 library(dplyr)
 library(tidyr)
 
-#files <- choose.files()
-
-files <- list.files("C:/Users/sheng/Downloads", pattern = "\\.parquet$", full.names = TRUE)
+files <- choose.files()
 
 basename(files) #making sure the correct files are grabbed.
 
@@ -457,9 +455,7 @@ for (col in group_cols) {
 ```{r}
 
 #Getting Borough_Zone
-#Borough_Zone = read.csv(file.choose(), header = TRUE, stringsAsFactors = TRUE)
-Borough_Zone <- read.csv("C:/Users/sheng/Downloads/taxi_zone_lookup.csv")
-
+Borough_Zone = read.csv(file.choose(), header = TRUE, stringsAsFactors = TRUE)
 
 head(Borough_Zone)
 
@@ -1243,8 +1239,8 @@ taxi %>%
   geom_jitter(alpha = 0.2) +
   geom_smooth( method = 'lm')+
   labs(
-    title = "Tip % vs Trip Duration",
-    x = "Trip Duration (minutes)",
+    title = "Tip % vs Log-Transformed Trip Duration",
+    x = "Log(1 + Trip Duration (minutes))",
     y = "Tip %"
   ) +
   theme_minimal()
@@ -1296,8 +1292,8 @@ taxi %>%
   geom_jitter(alpha = 0.2) +
   geom_smooth( method = 'lm')+
   labs(
-    title = "Tip % vs Trip Distance",
-    x = "Trip Distance (miles)",
+    title = "Tip % vs Log-Transformed Trip Distance",
+    x = "Log(1 + Trip Distance(miles))",
     y = "Tip %"
   ) +
   theme_minimal()
@@ -1401,34 +1397,35 @@ train_clean <- taxi_clean[train_idx_clean, ]
 test_clean  <- taxi_clean[-train_idx_clean, ]
 
 
-model_clean <- lm(
-  tip_percent_fare_amount ~ 
-    trip_distance +
-    trip_duration_mins +
-    fare_amount +
-    payment_type_name +
-    pickup_time_of_day +
-    weekday +
-    pickup_borough +
-    dropoff_borough +
-    Ratecode_name,
-  data = train_clean
-)
+#model_clean <- lm(
+#  tip_percent_fare_amount ~ 
+#    trip_distance +
+#    trip_duration_mins +
+#    fare_amount +
+#    payment_type_name +
+#    pickup_time_of_day +
+#    weekday +
+#    pickup_borough +
+#    dropoff_borough +
+#    Ratecode_name,
+#  data = train_clean
+#)
 
-summary(model_clean)
-confint(model_clean)
+#summary(model_clean)
+#confint(model_clean)
 
-pred_clean <- predict(model_clean, newdata = test_clean)
+#pred_clean <- predict(model_clean, newdata = test_clean)
 
-RMSE(pred_clean, test_clean$tip_percent_fare_amount)
-MAE(pred_clean, test_clean$tip_percent_fare_amount)
+#RMSE(pred_clean, test_clean$tip_percent_fare_amount)
+#MAE(pred_clean, test_clean$tip_percent_fare_amount)
 
 # Train predictions
-pred_train <- predict(model_clean, newdata = train_clean)
+#pred_train <- predict(model_clean, newdata = train_clean)
 
 # Train metrics
-RMSE(pred_train, train_clean$tip_percent_fare_amount)
-MAE(pred_train, train_clean$tip_percent_fare_amount)
+#RMSE(pred_train, train_clean$tip_percent_fare_amount)
+#MAE(pred_train, train_clean$tip_percent_fare_amount)
+
 ```
 
 
