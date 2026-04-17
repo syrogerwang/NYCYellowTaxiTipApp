@@ -8,8 +8,11 @@ library(glue)
 library(ragnar)
 library(ellmer)
 library(httr2)
+library(ggplot2)
 source("model.R")
 
+
+taxi <- readRDS("taxi_sample.rds")
 model_obj <- readRDS("tip_model.rds")
 
 # =========================================================
@@ -279,6 +282,53 @@ ui <- navbarPage(
         )
       )
     )
+  ),
+  tabPanel(
+    "Plots",
+    fluidPage(
+      sidebarLayout(
+        sidebarPanel(
+          selectInput(
+            "plot_pickup_time",
+            "Pickup Time of Day",
+            choices = c("All", sort(unique(as.character(taxi$pickup_time_of_day)))),
+            selected = "All"
+          ),
+          selectInput(
+            "plot_pickup_location",
+            "Pickup Borough",
+            choices = c("All", sort(unique(as.character(taxi$Borough_pickup)))),
+            selected = "All"
+          ),
+          selectInput(
+            "plot_dropoff_location",
+            "Dropoff Borough",
+            choices = c("All", sort(unique(as.character(taxi$Borough_dropoff)))),
+            selected = "All"
+          ),
+          selectInput(
+            "plot_ratecode",
+            "Rate Code",
+            choices = c("All", sort(unique(as.character(taxi$Ratecode_name)))),
+            selected = "All"
+          )
+        ),
+        mainPanel(
+          h4("Average Tip by Pickup Time of Day"),
+          plotOutput("plot_tip_by_time", height = "350px"),
+          
+          tags$hr(),
+          
+          h4("Average Tip by Pickup Borough"),
+          plotOutput("plot_tip_by_pickup", height = "350px"),
+          
+          tags$hr(),
+          
+          h4("Average Tip by Dropoff Borough"),
+          plotOutput("plot_tip_by_dropoff", height = "350px")
+        )
+      )
+    )
   )
 )
 
@@ -390,6 +440,95 @@ server <- function(input, output, session) {
         round(res$tip_amount, 2)
       )
     }
+  })
+  
+  
+  
+  
+  
+  filtered_plot_data <- reactive({
+    df <- taxi
+    
+    if (input$plot_pickup_time != "All") {
+      df <- df %>% filter(as.character(pickup_time_of_day) == input$plot_pickup_time)
+    }
+    
+    if (input$plot_pickup_location != "All") {
+      df <- df %>% filter(as.character(Borough_pickup) == input$plot_pickup_location)
+    }
+    
+    if (input$plot_dropoff_location != "All") {
+      df <- df %>% filter(as.character(Borough_dropoff) == input$plot_dropoff_location)
+    }
+    
+    if (input$plot_ratecode != "All") {
+      df <- df %>% filter(as.character(Ratecode_name) == input$plot_ratecode)
+    }
+    
+    df
+  })
+  
+  output$plot_tip_by_time <- renderPlot({
+    df <- filtered_plot_data()
+    req(nrow(df) > 0)
+    
+    plot_df <- df %>%
+      group_by(pickup_time_of_day) %>%
+      summarise(
+        avg_tip = mean(tip_amount, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    ggplot(plot_df, aes(x = pickup_time_of_day, y = avg_tip)) +
+      geom_col() +
+      labs(
+        x = "Pickup Time of Day",
+        y = "Average Tip Amount",
+        title = "Average Tip by Pickup Time of Day"
+      ) +
+      theme_minimal()
+  })
+  
+  output$plot_tip_by_pickup <- renderPlot({
+    df <- filtered_plot_data()
+    req(nrow(df) > 0)
+    
+    plot_df <- df %>%
+      group_by(Borough_pickup) %>%
+      summarise(
+        avg_tip = mean(tip_amount, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    ggplot(plot_df, aes(x = Borough_pickup, y = avg_tip)) +
+      geom_col() +
+      labs(
+        x = "Pickup Borough",
+        y = "Average Tip Amount",
+        title = "Average Tip by Pickup Borough"
+      ) +
+      theme_minimal()
+  })
+  
+  output$plot_tip_by_dropoff <- renderPlot({
+    df <- filtered_plot_data()
+    req(nrow(df) > 0)
+    
+    plot_df <- df %>%
+      group_by(Borough_dropoff) %>%
+      summarise(
+        avg_tip = mean(tip_amount, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    ggplot(plot_df, aes(x = Borough_dropoff, y = avg_tip)) +
+      geom_col() +
+      labs(
+        x = "Dropoff Borough",
+        y = "Average Tip Amount",
+        title = "Average Tip by Dropoff Borough"
+      ) +
+      theme_minimal()
   })
 }
 
