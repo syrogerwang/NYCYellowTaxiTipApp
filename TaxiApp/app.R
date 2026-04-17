@@ -23,8 +23,11 @@ hf_token <- Sys.getenv("HUGGINGFACE_API_KEY")
 if (hf_token == "") stop("HUGGINGFACE_API_KEY is not set.")
 
 # optional: rebuild the vector store each launch
-if (file.exists(DB_PATH)) file.remove(DB_PATH)
+DB_PATH <- file.path(tempdir(), "my_hf_rag.duckdb")
 
+if (file.exists(DB_PATH)) {
+  unlink(DB_PATH, force = TRUE)
+}
 # =========================================================
 # HTML CHUNK EXTRACTION
 # =========================================================
@@ -111,7 +114,8 @@ hf_embed <- function(texts) {
 store <- ragnar_store_create(
   DB_PATH,
   embed = hf_embed,
-  version = 1
+  version = 1,
+  overwrite = TRUE
 )
 
 # ragnar expects chunk-like records with at least text.
