@@ -3,84 +3,202 @@ library(xml2)
 library(dplyr)
 library(purrr)
 library(stringr)
-library(stringdist)
 library(htmltools)
 library(glue)
+library(ragnar)
+library(ellmer)
+library(httr2)
 source("model.R")
 
 model_obj <- readRDS("tip_model.rds")
 
-# ==== CONFIG ====
+# =========================================================
+# CONFIG
+# =========================================================
 HTML_PATH <- "RAG-File.html"
+DB_PATH   <- "my_hf_rag.duckdb"
+EMBEDDING_DIM <- 384
 
-# ==== RAG INDEX BUILDING ====
-build_rag_index <- function(html_path) {
+hf_token <- Sys.getenv("HUGGINGFACE_API_KEY")
+if (hf_token == "") stop("HUGGINGFACE_API_KEY is not set.")
+
+# optional: rebuild the vector store each launch
+if (file.exists(DB_PATH)) file.remove(DB_PATH)
+
+# =========================================================
+# HTML CHUNK EXTRACTION
+# =========================================================
+build_html_chunks <- function(html_path) {
   doc <- read_html(html_path)
-  
   divs <- xml_find_all(doc, "//div[@data-plot-id]")
   
   tibble(
-    id   = xml_attr(divs, "data-plot-id"),
-    tags = xml_attr(divs, "data-tags"),
-    type = "chunk",
-    text = map_chr(divs, ~ str_squish(xml_text(.x))),
-    html = map_chr(divs, ~ as.character(.x))
+    id     = xml_attr(divs, "data-plot-id"),
+    tags   = xml_attr(divs, "data-tags"),
+    text   = map_chr(divs, ~ str_squish(xml_text(.x))),
+    html   = map_chr(divs, ~ as.character(.x))
   ) %>%
     mutate(
       tags = if_else(is.na(tags), "", tags),
-      search_text = tolower(paste(text, tags, id, sep = " "))
-    )
+      origin = paste0("html_chunk:", id),
+      text = if_else(tags == "", text, paste(text, "\n\nTags: ", tags))
+    ) %>%
+    filter(!is.na(text), text != "")
 }
 
-retrieve_top_chunk <- function(index, query, k = 1) {
-  if (is.null(query) || query == "") return(NULL)
+html_chunks <- build_html_chunks(HTML_PATH)
+
+# =========================================================
+# HUGGING FACE EMBEDDINGS
+# =========================================================
+hf_embed <- function(texts) {
+  embedding_dim <- 384
   
-  q <- tolower(query)
-  texts <- index$search_text
+  hf_token <- Sys.getenv("HUGGINGFACE_API_KEY")
+  if (hf_token == "") stop("HUGGINGFACE_API_KEY is not set.")
   
-  d <- stringdistmatrix(q, texts, method = "cosine")
-  scores <- as.numeric(d[1, ])
-  best <- order(scores)[seq_len(min(k, nrow(index)))]
-  index[best, , drop = FALSE]
+  if (length(texts) == 0) {
+    return(matrix(numeric(0), nrow = 0, ncol = embedding_dim))
+  }
+  
+  embed_one <- function(txt) {
+    resp <- httr2::request(
+      "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+    ) |>
+      httr2::req_headers(
+        Authorization = paste("Bearer", hf_token),
+        `Content-Type` = "application/json"
+      ) |>
+      httr2::req_body_json(list(inputs = txt)) |>
+      httr2::req_timeout(60) |>
+      httr2::req_perform()
+    
+    out <- httr2::resp_body_json(resp, simplifyVector = TRUE)
+    
+    if (is.numeric(out)) {
+      vec <- out
+    } else if (is.matrix(out)) {
+      vec <- colMeans(out)
+    } else if (is.array(out) && length(dim(out)) == 3) {
+      token_mat <- out[1, , ]
+      vec <- colMeans(token_mat)
+    } else if (is.list(out)) {
+      token_mat <- do.call(rbind, out)
+      vec <- colMeans(token_mat)
+    } else {
+      stop("Unexpected embedding output shape from Hugging Face.")
+    }
+    
+    if (length(vec) != embedding_dim) {
+      stop(
+        paste0(
+          "Embedding length was ", length(vec),
+          " but expected ", embedding_dim, "."
+        )
+      )
+    }
+    
+    as.numeric(vec)
+  }
+  
+  emb <- t(vapply(texts, embed_one, numeric(embedding_dim)))
+  unname(emb)
 }
 
-rag_index <- build_rag_index(HTML_PATH)
+# =========================================================
+# VECTOR STORE
+# =========================================================
+store <- ragnar_store_create(
+  DB_PATH,
+  embed = hf_embed,
+  version = 1
+)
 
-# ==== LOCAL ANSWER FROM CONTEXT (NO LLM) ====
-answer_from_context <- function(question, context_text) {
-  if (is.null(context_text) || context_text == "") {
-    return("No relevant content found in the HTML index.")
-  }
-  
-  sentences <- unlist(strsplit(context_text, "(?<=[.!?])\\s+", perl = TRUE))
-  sentences <- str_squish(sentences)
-  sentences <- sentences[nchar(sentences) > 0]
-  
-  if (length(sentences) == 0) return(context_text)
-  
-  q_words <- str_to_lower(str_split(question, "\\W+", simplify = TRUE))
-  q_words <- q_words[q_words != ""]
-  
-  score_sentence <- function(s) {
-    s_words <- str_to_lower(str_split(s, "\\W+", simplify = TRUE))
-    s_words <- s_words[s_words != ""]
-    length(intersect(q_words, s_words))
-  }
-  
-  scores <- vapply(sentences, score_sentence, numeric(1))
-  
-  if (all(scores == 0)) {
-    best_sentences <- head(sentences, 3)
-  } else {
-    ord <- order(scores, decreasing = TRUE)
-    best_sentences <- sentences[head(ord, 3)]
-  }
-  
-  paste(best_sentences, collapse = " ")
+# ragnar expects chunk-like records with at least text.
+# We keep origin for source display.
+ragnar_store_insert(
+  store,
+  html_chunks %>% select(text, origin)
+)
+
+ragnar_store_build_index(store)
+
+# =========================================================
+# CHAT MODEL
+# =========================================================
+chat <- chat_huggingface(
+  model = "meta-llama/Llama-3.1-8B-Instruct",
+  system_prompt = paste(
+    "You are a grounded assistant.",
+    "Answer only from the retrieved context.",
+    "If the answer is not in the context, say so clearly.",
+    "When possible, mention the source."
+  )
+)
+
+# =========================================================
+# RETRIEVAL + RAG
+# =========================================================
+retrieve_chunks <- function(store, question, top_k = 5) {
+  ragnar_retrieve_vss(
+    store,
+    query = question,
+    top_k = top_k
+  )
 }
 
-# ==== SHINY APP ====
+ask_rag <- function(question, store, chat, top_k = 5) {
+  retrieved <- retrieve_chunks(store, question, top_k = top_k)
+  
+  if (nrow(retrieved) == 0) {
+    return(list(
+      answer = "I could not retrieve any relevant context.",
+      retrieved = retrieved
+    ))
+  }
+  
+  origin_col <- if ("origin" %in% names(retrieved)) "origin" else NULL
+  
+  context_parts <- vapply(
+    seq_len(nrow(retrieved)),
+    function(i) {
+      txt <- retrieved$text[i]
+      src <- if (!is.null(origin_col)) retrieved[[origin_col]][i] else "unknown"
+      paste0("SOURCE: ", src, "\n", txt)
+    },
+    character(1)
+  )
+  
+  context <- paste(context_parts, collapse = "\n\n--------------------\n\n")
+  
+  prompt <- paste0(
+    "Answer the question using only the context below.\n\n",
+    "Question:\n", question, "\n\n",
+    "Context:\n", context, "\n\n",
+    "Instructions:\n",
+    "- Be concise.\n",
+    "- If the answer is not in the context, say that clearly.\n",
+    "- Mention the source when helpful.\n"
+  )
+  
+  answer <- chat$chat(prompt)
+  
+  list(
+    answer = as.character(answer),
+    retrieved = retrieved
+  )
+}
 
+# helper to map retrieved origin back to original html snippet
+lookup_html_by_origin <- function(origin_value, html_chunks_tbl) {
+  idx <- match(origin_value, html_chunks_tbl$origin)
+  if (is.na(idx)) return(NULL)
+  html_chunks_tbl$html[idx]
+}
+
+# =========================================================
+# UI
+# =========================================================
 ui <- navbarPage(
   "Yellow Taxi App",
   
@@ -116,17 +234,21 @@ ui <- navbarPage(
       sidebarLayout(
         sidebarPanel(
           textInput("query", "Ask a question:", ""),
+          numericInput("top_k", "Number of chunks to retrieve", value = 5, min = 1, max = 10),
           actionButton("ask", "Answer"),
           br(), br(),
           actionButton("voice", "🎤 Speak question"),
           helpText("Voice input fills the text box if your browser supports speech recognition.")
         ),
         mainPanel(
-          h4("RAG Interpretation (Local Heuristic — No LLM)"),
+          h4("RAG Answer (Hugging Face + Ragnar)"),
           verbatimTextOutput("answer_text"),
           tags$hr(),
-          h4("Relevant HTML Chunk"),
-          uiOutput("answer_html")
+          h4("Top Retrieved Source"),
+          uiOutput("answer_html"),
+          tags$hr(),
+          h4("Retrieved Sources"),
+          tableOutput("retrieved_table")
         )
       )
     )
@@ -156,6 +278,9 @@ ui <- navbarPage(
   )
 )
 
+# =========================================================
+# SERVER
+# =========================================================
 server <- function(input, output, session) {
   
   observeEvent(input$voice_text, {
@@ -168,26 +293,66 @@ server <- function(input, output, session) {
   
   rag_result <- eventReactive(input$ask, {
     req(input$query)
-    retrieve_top_chunk(rag_index, input$query, k = 1)
+    ask_rag(
+      question = input$query,
+      store = store,
+      chat = chat,
+      top_k = input$top_k
+    )
   })
   
   output$answer_text <- renderText({
     res <- rag_result()
-    if (is.null(res) || nrow(res) == 0) {
-      return("No relevant content found in the HTML index.")
-    }
-    
-    context_text <- res$text[1]
-    answer_from_context(input$query, context_text)
+    req(res)
+    res$answer
   })
   
   output$answer_html <- renderUI({
     res <- rag_result()
-    if (is.null(res) || nrow(res) == 0) {
-      return(HTML("<em>No content to display.</em>"))
+    req(res)
+    
+    retrieved <- res$retrieved
+    if (nrow(retrieved) == 0) {
+      return(HTML("<em>No retrieved content to display.</em>"))
     }
-    HTML(res$html[1])
+    
+    html_blocks <- lapply(seq_len(nrow(retrieved)), function(i) {
+      origin_val <- if ("origin" %in% names(retrieved)) retrieved$origin[i] else NULL
+      if (is.null(origin_val)) return(NULL)
+      
+      html_snippet <- lookup_html_by_origin(origin_val, html_chunks)
+      if (is.null(html_snippet) || is.na(html_snippet) || html_snippet == "") return(NULL)
+      
+      tagList(
+        tags$div(
+          style = "margin-bottom: 24px;",
+          tags$h5(paste("Relevant chart", i)),
+          HTML(html_snippet)
+        )
+      )
+    })
+    
+    do.call(tagList, html_blocks)
   })
+  
+  output$retrieved_table <- renderTable({
+    res <- rag_result()
+    req(res)
+    
+    retrieved <- res$retrieved
+    if (nrow(retrieved) == 0) return(NULL)
+    
+    out <- retrieved
+    
+    keep_cols <- intersect(c("origin", "text", "distance", "score"), names(out))
+    out <- out[, keep_cols, drop = FALSE]
+    
+    if ("text" %in% names(out)) {
+      out$text <- substr(out$text, 1, 160)
+    }
+    
+    out
+  }, striped = TRUE, bordered = TRUE)
   
   tip_prediction <- eventReactive(input$predict_btn, {
     fare_val <- suppressWarnings(as.numeric(input$fare_amount))
